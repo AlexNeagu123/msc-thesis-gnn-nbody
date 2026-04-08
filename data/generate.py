@@ -13,224 +13,279 @@ References:
 """
 
 import argparse
-import os
+from pathlib import Path
 
 import h5py
 import numpy as np
 import rebound
 import yaml
 
+from data.types import DataGenConfig, SimulationParams
 from utils import get_logger
 
 logger = get_logger(__name__)
 
 
+class Generator:
+    """Generates chaotic N-body trajectories and saves them to HDF5.
+
+    Usage::
+
+        cfg = DataGenConfig.from_dict(raw)
+        Generator(cfg).run()
+    """
+
+    def __init__(self, cfg: DataGenConfig) -> None:
+        """Initialize the generator with a typed config.
+
+        Args:
+            cfg: data generation configuration.
+        """
+        self.cfg = cfg
+        self.params = cfg.simulation
+
+    def run(self) -> None:
+        """Generate all splits defined in the config."""
+        for split in self.cfg.splits:
+            logger.info(
+                "generating %s split (%d trajectories)...",
+                split.name,
+                split.n_trajectories,
+            )
+            self._generate_split(
+                n_trajectories=split.n_trajectories,
+                output_path=split.path,
+                seed=split.seed,
+            )
+
+    def _generate_split(
+        self,
+        n_trajectories: int,
+        output_path: str,
+        seed: int,
+    ) -> None:
+        """Generate one dataset split and save to HDF5.
+
+        Args:
+            n_trajectories: number of valid trajectories to generate.
+            output_path: path to write the HDF5 file.
+            seed: random seed for reproducibility.
+        """
+        rng = np.random.default_rng(seed)
+        n_steps = int(self.params.t_end / self.params.dt)
+
+        all_states = np.zeros((n_trajectories, n_steps, self.params.n_particles, 4))
+        all_energies = np.zeros((n_trajectories, n_steps))
+
+        collected = 0
+        attempted = 0
+
+        while collected < n_trajectories:
+            attempted += 1
+            result = self._simulate_trajectory(rng)
+
+            if result is None:
+                continue
+
+            states, energies = result
+            all_states[collected] = states
+            all_energies[collected] = energies
+            collected += 1
+
+            logger.info(
+                "trajectory %d/%d (attempted: %d)",
+                collected,
+                n_trajectories,
+                attempted,
+            )
+
+        self._save_hdf5(
+            all_states,
+            all_energies,
+            n_trajectories,
+            output_path,
+            seed,
+            attempted,
+        )
+
+    def _simulate_trajectory(
+        self,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Simulate one trajectory using REBOUND + IAS15.
+
+        Args:
+            rng: numpy random generator.
+
+        Returns:
+            Tuple of (states, energies) or None if a close encounter is detected.
+        """
+        params = self.params
+
+        sim = rebound.Simulation()
+        sim.G = params.G
+        sim.integrator = "ias15"
+
+        positions, velocities = self._sample_initial_conditions(rng)
+
+        # add particles to simulation (2D: z=0, vz=0)
+        for i in range(params.n_particles):
+            sim.add(
+                m=params.mass,
+                x=positions[i, 0],
+                y=positions[i, 1],
+                z=0,
+                vx=velocities[i, 0],
+                vy=velocities[i, 1],
+                vz=0,
+            )
+
+        return self._integrate(sim)
+
+    def _sample_initial_conditions(
+        self,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample Gaussian initial positions and velocities with COM subtracted.
+
+        Args:
+            rng: numpy random generator.
+
+        Returns:
+            Tuple of (positions, velocities), each shape (n_particles, 2).
+        """
+        params = self.params
+
+        positions = rng.normal(0, params.pos_scale, size=(params.n_particles, 2))
+        velocities = rng.normal(0, params.vel_scale, size=(params.n_particles, 2))
+
+        # zero out center of mass (isolated system, no drift)
+        positions -= positions.mean(axis=0)
+        velocities -= velocities.mean(axis=0)
+
+        return positions, velocities
+
+    def _integrate(
+        self,
+        sim: rebound.Simulation,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Integrate the simulation and record snapshots.
+
+        Args:
+            sim: initialized REBOUND simulation.
+
+        Returns:
+            Tuple of (states, energies) or None if a close encounter is detected.
+        """
+        params = self.params
+        n_steps = int(params.t_end / params.dt)
+        states = np.zeros((n_steps, params.n_particles, 4))
+        energies = np.zeros(n_steps)
+
+        for step in range(n_steps):
+            sim.integrate(sim.t + params.dt)
+
+            for i in range(params.n_particles):
+                p = sim.particles[i]
+                states[step, i] = [p.x, p.y, p.vx, p.vy]
+
+            energies[step] = sim.energy()
+
+            if self._has_close_encounter(states[step]):
+                return None
+
+        return states, energies
+
+    def _has_close_encounter(self, snapshot: np.ndarray) -> bool:
+        """Check if any pair of particles is closer than min_distance.
+
+        Args:
+            snapshot: state at one timestep, shape (n_particles, 4).
+
+        Returns:
+            True if a close encounter is detected.
+        """
+        for i in range(self.params.n_particles):
+            for j in range(i + 1, self.params.n_particles):
+                dx = snapshot[i, 0] - snapshot[j, 0]
+                dy = snapshot[i, 1] - snapshot[j, 1]
+                dist = np.sqrt(dx**2 + dy**2)
+                if dist < self.params.min_distance:
+                    return True
+        return False
+
+    def _save_hdf5(
+        self,
+        states: np.ndarray,
+        energies: np.ndarray,
+        n_trajectories: int,
+        output_path: str,
+        seed: int,
+        attempted: int,
+    ) -> None:
+        """Save trajectories and metadata to HDF5.
+
+        Args:
+            states: trajectory data, shape (n_traj, n_steps, n_particles, 4).
+            energies: energy data, shape (n_traj, n_steps).
+            n_trajectories: number of trajectories.
+            output_path: path to write the HDF5 file.
+            seed: random seed used for this split.
+            attempted: total number of trajectory attempts.
+        """
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        params = self.params
+        with h5py.File(output, "w") as f:
+            f.create_dataset("trajectories", data=states)
+            f.create_dataset("energies", data=energies)
+
+            meta = f.create_group("metadata")
+            meta.attrs["n_trajectories"] = n_trajectories
+            meta.attrs["n_particles"] = params.n_particles
+            meta.attrs["n_steps"] = states.shape[1]
+            meta.attrs["t_end"] = params.t_end
+            meta.attrs["dt"] = params.dt
+            meta.attrs["G"] = params.G
+            meta.attrs["mass"] = params.mass
+            meta.attrs["min_distance"] = params.min_distance
+            meta.attrs["pos_scale"] = params.pos_scale
+            meta.attrs["vel_scale"] = params.vel_scale
+            meta.attrs["seed"] = seed
+            meta.attrs["rejection_rate"] = 1 - n_trajectories / attempted
+
+        logger.info("saved %d trajectories to %s", n_trajectories, output_path)
+        logger.info("rejection rate: %.1f%%", (1 - n_trajectories / attempted) * 100)
+
+
 def generate_trajectory(
-    n_particles: int = 3,
-    t_end: float = 10.0,
-    dt: float = 0.05,
-    G: float = 1.0,
-    mass: float = 1.0,
-    min_distance: float = 0.001,
-    pos_scale: float = 1.0,
-    vel_scale: float = 0.5,
+    params: SimulationParams,
     rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Simulate one 3-body trajectory using REBOUND + IAS15.
+    """Convenience function for simulating a single trajectory.
 
     Args:
-        n_particles: number of particles in the simulation.
-        t_end: total simulation time.
-        dt: output snapshot interval.
-        G: gravitational constant.
-        mass: mass of each particle (equal masses).
-        min_distance: minimum pairwise distance before rejection.
-        pos_scale: standard deviation of initial position Gaussian.
-        vel_scale: standard deviation of initial velocity Gaussian.
+        params: simulation parameters.
         rng: numpy random generator for reproducibility.
 
     Returns:
-        Tuple of (states, energies) where states has shape
-        (n_steps, n_particles, 4) with columns [x, y, vx, vy] and
-        energies has shape (n_steps,), or None if a close encounter
-        is detected.
+        Tuple of (states, energies) or None if a close encounter is detected.
     """
     if rng is None:
         rng = np.random.default_rng()
 
-    sim = rebound.Simulation()
-    sim.G = G
-    sim.integrator = "ias15"
-
-    # sample initial conditions from Gaussian, then subtract center of mass
-    positions = rng.normal(0, pos_scale, size=(n_particles, 2))
-    velocities = rng.normal(0, vel_scale, size=(n_particles, 2))
-
-    # zero out center of mass position and velocity (isolated system, no drift)
-    positions -= positions.mean(axis=0)
-    velocities -= velocities.mean(axis=0)
-
-    # add particles to simulation (2D: z=0, vz=0)
-    for i in range(n_particles):
-        sim.add(
-            m=mass,
-            x=positions[i, 0],
-            y=positions[i, 1],
-            z=0,
-            vx=velocities[i, 0],
-            vy=velocities[i, 1],
-            vz=0,
-        )
-
-    # integrate and record snapshots
-    n_steps = int(t_end / dt)
-    states = np.zeros((n_steps, n_particles, 4))
-    energies = np.zeros(n_steps)
-
-    for step in range(n_steps):
-        sim.integrate(sim.t + dt)
-
-        for i in range(n_particles):
-            p = sim.particles[i]
-            states[step, i] = [p.x, p.y, p.vx, p.vy]
-
-        energies[step] = sim.energy()
-
-        # check all pairwise distances for close encounters
-        for i in range(n_particles):
-            for j in range(i + 1, n_particles):
-                dx = states[step, i, 0] - states[step, j, 0]
-                dy = states[step, i, 1] - states[step, j, 1]
-                dist = np.sqrt(dx**2 + dy**2)
-                if dist < min_distance:
-                    return None
-
-    return states, energies
-
-
-def generate_dataset(
-    n_trajectories: int,
-    n_particles: int = 3,
-    t_end: float = 10.0,
-    dt: float = 0.05,
-    G: float = 1.0,
-    mass: float = 1.0,
-    min_distance: float = 0.001,
-    pos_scale: float = 1.0,
-    vel_scale: float = 0.5,
-    output_path: str = "data/train.h5",
-    seed: int = 0,
-) -> None:
-    """Generate valid trajectories and save to HDF5.
-
-    Rejected trajectories (close encounters) are resampled until the
-    requested count is reached.
-
-    Args:
-        n_trajectories: number of valid trajectories to generate.
-        n_particles: number of particles per simulation.
-        t_end: total simulation time per trajectory.
-        dt: output snapshot interval.
-        G: gravitational constant.
-        mass: mass of each particle.
-        min_distance: minimum pairwise distance before rejection.
-        pos_scale: standard deviation of initial position Gaussian.
-        vel_scale: standard deviation of initial velocity Gaussian.
-        output_path: path to write the HDF5 file.
-        seed: random seed for reproducibility.
-    """
-    rng = np.random.default_rng(seed)
-    n_steps = int(t_end / dt)
-
-    all_states = np.zeros((n_trajectories, n_steps, n_particles, 4))
-    all_energies = np.zeros((n_trajectories, n_steps))
-
-    collected = 0
-    attempted = 0
-
-    while collected < n_trajectories:
-        attempted += 1
-        result = generate_trajectory(
-            n_particles=n_particles,
-            t_end=t_end,
-            dt=dt,
-            G=G,
-            mass=mass,
-            min_distance=min_distance,
-            pos_scale=pos_scale,
-            vel_scale=vel_scale,
-            rng=rng,
-        )
-
-        if result is None:
-            continue
-
-        states, energies = result
-        all_states[collected] = states
-        all_energies[collected] = energies
-        collected += 1
-
-        logger.info(f"trajectory {collected}/{n_trajectories} (attempted: {attempted})")
-
-    # save to HDF5
-    with h5py.File(output_path, "w") as f:
-        f.create_dataset("trajectories", data=all_states)
-        f.create_dataset("energies", data=all_energies)
-
-        meta = f.create_group("metadata")
-        meta.attrs["n_trajectories"] = n_trajectories
-        meta.attrs["n_particles"] = n_particles
-        meta.attrs["n_steps"] = n_steps
-        meta.attrs["t_end"] = t_end
-        meta.attrs["dt"] = dt
-        meta.attrs["G"] = G
-        meta.attrs["mass"] = mass
-        meta.attrs["min_distance"] = min_distance
-        meta.attrs["pos_scale"] = pos_scale
-        meta.attrs["vel_scale"] = vel_scale
-        meta.attrs["seed"] = seed
-        meta.attrs["rejection_rate"] = 1 - n_trajectories / attempted
-
-    logger.info(f"saved {n_trajectories} trajectories to {output_path}")
-    logger.info(f"rejection rate: {1 - n_trajectories / attempted:.1%}")
+    cfg = DataGenConfig(simulation=params, splits=[])
+    return Generator(cfg)._simulate_trajectory(rng)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate N-body trajectory datasets.")
-    parser.add_argument("--config", type=str, default="data/config.yaml")
+    parser.add_argument("--config", type=str, default="configs/data.yaml")
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    with Path(args.config).open() as f:
+        raw = yaml.safe_load(f)
 
-    output_dir = os.path.dirname(cfg["train_path"])
-    os.makedirs(output_dir, exist_ok=True)
-
-    # shared params for all splits
-    common = dict(
-        n_particles=cfg["n_particles"],
-        t_end=cfg["t_end"],
-        dt=cfg["dt"],
-        G=cfg["G"],
-        mass=cfg["mass"],
-        min_distance=cfg["min_distance"],
-        pos_scale=cfg["pos_scale"],
-        vel_scale=cfg["vel_scale"],
-    )
-
-    # use different seeds per split so trajectories don't overlap
-    seed = cfg["seed"]
-    splits = [
-        ("train", cfg["n_train"], cfg["train_path"], seed),
-        ("val", cfg["n_val"], cfg["val_path"], seed + 1000),
-        ("test", cfg["n_test"], cfg["test_path"], seed + 2000),
-    ]
-
-    for name, count, path, split_seed in splits:
-        logger.info(f"generating {name} split ({count} trajectories)...")
-        generate_dataset(
-            n_trajectories=count,
-            output_path=path,
-            seed=split_seed,
-            **common,
-        )
+    config = DataGenConfig.from_dict(raw)
+    Generator(config).run()

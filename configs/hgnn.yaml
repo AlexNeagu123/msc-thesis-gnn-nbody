@@ -1,0 +1,33 @@
+model:
+  name: hgnn
+  hidden_dim: 64
+  n_layers: 4
+  summary: true
+
+data:
+  train_path: data/output/train.h5
+  val_path: data/output/val.h5
+  dt: 0.05
+
+training:
+  epochs: 500
+  batch_size: 256
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  loss: mse
+  seed: 42
+  device: auto
+
+scheduler:
+  enabled: true
+  patience: 50
+  factor: 0.5
+  min_lr: 1.0e-6
+
+checkpointing:
+  enabled: true
+  dir: checkpoints/hgnn/
+
+logging:
+  enabled: true
+  dir: logs/hgnn/
