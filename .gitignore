@@ -1,0 +1,5 @@
+.venv/
+data/output/*.h5
+__pycache__/
+*.pyc
+checkpoints/

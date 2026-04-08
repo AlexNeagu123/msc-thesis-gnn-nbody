@@ -1,0 +1,10 @@
+model:
+  hidden_dim: 64
+  n_layers: 4
+
+training:
+  epochs: 500
+  batch_size: 256
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  checkpoint_dir: checkpoints/hgnn/

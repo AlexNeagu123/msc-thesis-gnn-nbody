@@ -1,0 +1,16 @@
+train_path: data/output/train.h5
+val_path: data/output/val.h5
+test_path: data/output/test.h5
+
+n_particles: 3
+n_train: 1000
+n_val: 20
+n_test: 20
+t_end: 10.0
+dt: 0.05
+G: 1.0
+mass: 1.0
+min_distance: 0.001
+pos_scale: 1.0
+vel_scale: 0.5
+seed: 42
