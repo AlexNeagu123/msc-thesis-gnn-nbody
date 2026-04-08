@@ -23,21 +23,21 @@ from training.types import (
 
 
 class DummyModel(nn.Module):
-    """Minimal model that maps (batch, 3, 4) -> (batch, 3, 4)."""
+    """Minimal model that maps (batch, 3, 5) -> (batch, 3, 5)."""
 
     def __init__(self) -> None:
         """Initialize with a single linear layer."""
         super().__init__()
-        self.net = nn.Linear(4, 4)
+        self.net = nn.Linear(5, 5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass, applied per-particle.
 
         Args:
-            x: input tensor of shape (batch, n_particles, 4).
+            x: input tensor of shape (batch, n_particles, 5).
 
         Returns:
-            Output tensor of shape (batch, n_particles, 4).
+            Output tensor of shape (batch, n_particles, 5).
         """
         return self.net(x)
 
@@ -52,7 +52,7 @@ def sample_h5(tmp_path: Path) -> tuple[str, str]:
     rng = np.random.default_rng(42)
 
     for name in ("train.h5", "val.h5"):
-        trajectories = rng.normal(size=(5, 10, 3, 4))
+        trajectories = rng.normal(size=(5, 10, 3, 5))
         energies = rng.normal(size=(5, 10))
         path = tmp_path / name
         with h5py.File(path, "w") as f:

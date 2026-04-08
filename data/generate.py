@@ -74,7 +74,7 @@ class Generator:
         rng = np.random.default_rng(seed)
         n_steps = int(self.params.t_end / self.params.dt)
 
-        all_states = np.zeros((n_trajectories, n_steps, self.params.n_particles, 4))
+        all_states = np.zeros((n_trajectories, n_steps, self.params.n_particles, 5))
         all_energies = np.zeros((n_trajectories, n_steps))
 
         collected = 0
@@ -179,7 +179,7 @@ class Generator:
         """
         params = self.params
         n_steps = int(params.t_end / params.dt)
-        states = np.zeros((n_steps, params.n_particles, 4))
+        states = np.zeros((n_steps, params.n_particles, 5))
         energies = np.zeros(n_steps)
 
         for step in range(n_steps):
@@ -187,7 +187,7 @@ class Generator:
 
             for i in range(params.n_particles):
                 p = sim.particles[i]
-                states[step, i] = [p.x, p.y, p.vx, p.vy]
+                states[step, i] = [p.x, p.y, p.vx, p.vy, p.m]
 
             energies[step] = sim.energy()
 

@@ -185,7 +185,7 @@ class Trainer:
 
         if self.cfg.model.summary:
             n_particles = 3
-            state_dim = 4
+            state_dim = 5
             summary(
                 model,
                 input_size=(self.cfg.training.batch_size, n_particles, state_dim),

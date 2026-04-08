@@ -1,6 +1,6 @@
 """PyTorch Dataset wrapping the HDF5 trajectory files.
 
-Each sample is a (state_t, state_t+1) pair where state has shape (n_particles, 4).
+Each sample is a (state_t, state_t+1) pair where state has shape (n_particles, 5).
 Model-agnostic: returns raw [x, y, vx, vy] per particle, no graph construction.
 
 References:
@@ -17,7 +17,7 @@ class NBodyDataset(Dataset):
     """Loads trajectories from an HDF5 file and returns consecutive state pairs.
 
     The HDF5 file contains:
-        /trajectories — (n_trajectories, n_steps, n_particles, 4)
+        /trajectories — (n_trajectories, n_steps, n_particles, 5)
         /energies     — (n_trajectories, n_steps)
 
     This dataset flattens all trajectories into (state_t, state_t+1) pairs.
@@ -44,5 +44,5 @@ class NBodyDataset(Dataset):
         return len(self.inputs)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (state_t, state_t+dt), each of shape (n_particles, 4)."""
+        """Return (state_t, state_t+dt), each of shape (n_particles, 5)."""
         return self.inputs[idx], self.targets[idx]

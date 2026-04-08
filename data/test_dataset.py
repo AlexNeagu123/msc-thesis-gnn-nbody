@@ -16,7 +16,7 @@ def sample_h5(tmp_path: Path) -> tuple[str, np.ndarray]:
     n_traj, n_steps, n_particles = 3, 10, 3
     rng = np.random.default_rng(42)
 
-    trajectories = rng.normal(size=(n_traj, n_steps, n_particles, 4))
+    trajectories = rng.normal(size=(n_traj, n_steps, n_particles, 5))
     energies = rng.normal(size=(n_traj, n_steps))
 
     path = str(tmp_path / "test.h5")
@@ -37,13 +37,13 @@ def test_dataset_length(sample_h5: tuple[str, np.ndarray]) -> None:
 
 
 def test_dataset_shapes(sample_h5: tuple[str, np.ndarray]) -> None:
-    """Each sample returns two tensors of shape (n_particles, 4)."""
+    """Each sample returns two tensors of shape (n_particles, 5)."""
     path, _ = sample_h5
     ds = NBodyDataset(path)
 
     state_t, state_next = ds[0]
-    assert state_t.shape == (3, 4)
-    assert state_next.shape == (3, 4)
+    assert state_t.shape == (3, 5)
+    assert state_next.shape == (3, 5)
 
 
 def test_dataset_dtype(sample_h5: tuple[str, np.ndarray]) -> None:

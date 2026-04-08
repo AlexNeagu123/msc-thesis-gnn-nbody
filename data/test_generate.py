@@ -37,7 +37,7 @@ def test_trajectory_shape(
     assert result is not None
 
     states, energies = result
-    assert states.shape == (20, 3, 4)
+    assert states.shape == (20, 3, 5)
     assert energies.shape == (20,)
 
 
@@ -45,7 +45,7 @@ def test_trajectory_state_columns(
     default_params: SimulationParams,
     rng: np.random.Generator,
 ) -> None:
-    """State columns are [x, y, vx, vy] — positions and velocities should be finite."""
+    """State columns are [x, y, vx, vy, m] — all values should be finite."""
     result = generate_trajectory(default_params, rng)
     assert result is not None
 
