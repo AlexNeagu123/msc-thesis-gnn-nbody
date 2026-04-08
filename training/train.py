@@ -44,11 +44,17 @@ def load_config(path: str) -> TrainConfig:
     return TrainConfig.from_dict(raw)
 
 
-def build_model(cfg: TrainConfig) -> nn.Module:
+def build_model(
+    cfg: TrainConfig,
+    pos_std: float = 1.0,
+    vel_std: float = 1.0,
+) -> nn.Module:
     """Instantiate a model based on config.
 
     Args:
         cfg: typed training config.
+        pos_std: position standard deviation for input normalization.
+        vel_std: velocity standard deviation for input normalization.
 
     Returns:
         Model instance (not yet moved to device).
@@ -59,7 +65,12 @@ def build_model(cfg: TrainConfig) -> nn.Module:
     name = cfg.model.name
 
     if name == "egnn":
-        return EGNN(hidden_dim=cfg.model.hidden_dim, n_layers=cfg.model.n_layers)
+        return EGNN(
+            hidden_dim=cfg.model.hidden_dim,
+            n_layers=cfg.model.n_layers,
+            pos_std=pos_std,
+            vel_std=vel_std,
+        )
     if name == "hgnn":
         msg = "HGNN not implemented yet."
         raise NotImplementedError(msg)
@@ -143,7 +154,10 @@ class Trainer:
     # --- setup helpers ---
 
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
-        """Create train and val DataLoaders.
+        """Create train and val DataLoaders and compute normalization stats.
+
+        Computes position/velocity standard deviations from the training set
+        and stores them as self.pos_std / self.vel_std for model construction.
 
         Returns:
             Tuple of (train_loader, val_loader).
@@ -151,6 +165,11 @@ class Trainer:
         cfg = self.cfg
         train_set = NBodyDataset(cfg.data.train_path)
         val_set = NBodyDataset(cfg.data.val_path)
+
+        # compute normalization stats from training data
+        self.pos_std = float(train_set.inputs[..., :2].std())
+        self.vel_std = float(train_set.inputs[..., 2:4].std())
+        logger.info("data stds: pos=%.4f, vel=%.4f", self.pos_std, self.vel_std)
 
         use_cuda = self.device.type == "cuda"
         train_loader = DataLoader(
@@ -181,7 +200,7 @@ class Trainer:
         Returns:
             Model moved to the target device.
         """
-        model = build_model(self.cfg).to(self.device)
+        model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(self.device)
 
         if self.cfg.model.summary:
             n_particles = 3
@@ -191,6 +210,7 @@ class Trainer:
                 input_size=(self.cfg.training.batch_size, n_particles, state_dim),
                 col_names=["input_size", "output_size", "num_params", "mult_adds"],
                 depth=4,
+                device=self.device,
             )
 
         return model
@@ -286,6 +306,7 @@ class Trainer:
                 if training:
                     self.optimizer.zero_grad()
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                     self.optimizer.step()
 
                 total_loss += loss.item()
