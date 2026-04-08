@@ -23,7 +23,8 @@ from torchinfo import summary
 from tqdm import tqdm
 
 from data.dataset import NBodyDataset
-from training.types import Checkpoint, TrainConfig, TrainResult
+from models.egnn import EGNN
+from training._types import Checkpoint, TrainConfig, TrainResult
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -58,8 +59,7 @@ def build_model(cfg: TrainConfig) -> nn.Module:
     name = cfg.model.name
 
     if name == "egnn":
-        msg = "EGNN not implemented yet."
-        raise NotImplementedError(msg)
+        return EGNN(hidden_dim=cfg.model.hidden_dim, n_layers=cfg.model.n_layers)
     if name == "hgnn":
         msg = "HGNN not implemented yet."
         raise NotImplementedError(msg)

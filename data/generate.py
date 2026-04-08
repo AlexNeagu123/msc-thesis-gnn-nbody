@@ -20,7 +20,7 @@ import numpy as np
 import rebound
 import yaml
 
-from data.types import DataGenConfig, SimulationParams
+from data._types import DataGenConfig, SimulationParams
 from utils import get_logger
 
 logger = get_logger(__name__)

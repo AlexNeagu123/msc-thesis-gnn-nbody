@@ -8,8 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from training.train import load_config, train
-from training.types import (
+from training._types import (
     Checkpoint,
     CheckpointConfig,
     DataConfig,
@@ -20,6 +19,7 @@ from training.types import (
     TrainingParams,
     TrainResult,
 )
+from training.train import load_config, train
 
 
 class DummyModel(nn.Module):

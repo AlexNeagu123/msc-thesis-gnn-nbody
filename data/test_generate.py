@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
+from data._types import SimulationParams
 from data.generate import generate_trajectory
-from data.types import SimulationParams
 
 
 @pytest.fixture
