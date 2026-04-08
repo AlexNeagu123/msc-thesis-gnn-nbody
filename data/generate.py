@@ -1,5 +1,4 @@
-"""
-Trajectory generation using REBOUND + IAS15.
+"""Trajectory generation using REBOUND + IAS15.
 
 Generates chaotic 3-body gravitational trajectories and saves them to HDF5.
 Trajectories with close encounters are filtered out during generation.
@@ -16,9 +15,9 @@ References:
 import argparse
 import os
 
-import rebound
-import numpy as np
 import h5py
+import numpy as np
+import rebound
 import yaml
 
 from utils import get_logger
@@ -37,14 +36,24 @@ def generate_trajectory(
     vel_scale: float = 0.5,
     rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """
-    Simulate one 3-body trajectory using REBOUND + IAS15.
+    """Simulate one 3-body trajectory using REBOUND + IAS15.
+
+    Args:
+        n_particles: number of particles in the simulation.
+        t_end: total simulation time.
+        dt: output snapshot interval.
+        G: gravitational constant.
+        mass: mass of each particle (equal masses).
+        min_distance: minimum pairwise distance before rejection.
+        pos_scale: standard deviation of initial position Gaussian.
+        vel_scale: standard deviation of initial velocity Gaussian.
+        rng: numpy random generator for reproducibility.
 
     Returns:
-        (states, energies) where:
-            states: (n_steps, n_particles, 4) — columns [x, y, vx, vy]
-            energies: (n_steps,) — total energy at each snapshot
-        or None if a close encounter is detected (pairwise distance < min_distance).
+        Tuple of (states, energies) where states has shape
+        (n_steps, n_particles, 4) with columns [x, y, vx, vy] and
+        energies has shape (n_steps,), or None if a close encounter
+        is detected.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -65,8 +74,12 @@ def generate_trajectory(
     for i in range(n_particles):
         sim.add(
             m=mass,
-            x=positions[i, 0], y=positions[i, 1], z=0,
-            vx=velocities[i, 0], vy=velocities[i, 1], vz=0,
+            x=positions[i, 0],
+            y=positions[i, 1],
+            z=0,
+            vx=velocities[i, 0],
+            vy=velocities[i, 1],
+            vz=0,
         )
 
     # integrate and record snapshots
@@ -108,16 +121,23 @@ def generate_dataset(
     output_path: str = "data/train.h5",
     seed: int = 0,
 ) -> None:
-    """
-    Generate `n_trajectories` valid trajectories and save to HDF5.
+    """Generate valid trajectories and save to HDF5.
 
     Rejected trajectories (close encounters) are resampled until the
     requested count is reached.
 
-    HDF5 layout:
-        /<split>/trajectories  — (n_trajectories, n_steps, n_particles, 4)
-        /<split>/energies      — (n_trajectories, n_steps)
-        /metadata              — attributes with generation parameters
+    Args:
+        n_trajectories: number of valid trajectories to generate.
+        n_particles: number of particles per simulation.
+        t_end: total simulation time per trajectory.
+        dt: output snapshot interval.
+        G: gravitational constant.
+        mass: mass of each particle.
+        min_distance: minimum pairwise distance before rejection.
+        pos_scale: standard deviation of initial position Gaussian.
+        vel_scale: standard deviation of initial velocity Gaussian.
+        output_path: path to write the HDF5 file.
+        seed: random seed for reproducibility.
     """
     rng = np.random.default_rng(seed)
     n_steps = int(t_end / dt)

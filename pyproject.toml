@@ -1,7 +1,7 @@
 [project]
 name = "thesis-nbody"
 version = "0.1.0"
-description = "Add your description here"
+description = "Comparing inductive biases in graph neural networks for learning chaotic gravitational dynamics"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,4 +11,54 @@ dependencies = [
     "numpy>=2.2.6",
     "pyyaml>=6.0.3",
     "rebound>=4.6.0",
+    "torch>=2.11.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import ordering)
+    "UP",   # pyupgrade (modern python syntax)
+    "B",    # flake8-bugbear (common bugs)
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+    "ANN",  # type annotations
+    "D",    # docstring conventions
+    "PT",   # pytest style
+    "RUF",  # ruff-specific checks
+    "ERA",  # commented-out code
+]
+ignore = [
+    "E501",   # line too long — we set line-length above, formatter handles it
+    "N803",   # allow uppercase argument names (G for gravitational constant, etc.)
+    "D100",   # missing docstring in public module — we use module-level docstrings selectively
+    "D104",   # missing docstring in public package
+    "D212",   # multi-line summary on first line — we prefer D213 (summary on second line)
+    "D203",   # blank line before class docstring — conflicts with D211
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["data", "models", "training", "evaluation", "utils"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+pythonpath = ["."]
