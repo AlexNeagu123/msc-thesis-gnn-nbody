@@ -3,3 +3,5 @@ data/output/*.h5
 __pycache__/
 *.pyc
 checkpoints/
+logs/
+.DS_Store

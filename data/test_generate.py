@@ -23,6 +23,7 @@ def default_params() -> SimulationParams:
         G=1.0,
         mass=1.0,
         min_distance=0.001,
+        max_position=10.0,
         pos_scale=1.0,
         vel_scale=0.5,
     )
@@ -88,6 +89,7 @@ def test_close_encounter_filtering() -> None:
         G=1.0,
         mass=1.0,
         min_distance=1.0,
+        max_position=10.0,
         pos_scale=1.0,
         vel_scale=0.5,
     )

@@ -19,6 +19,7 @@ class SimulationParams:
     G: float
     mass: float
     min_distance: float
+    max_position: float
     pos_scale: float
     vel_scale: float
 
@@ -57,6 +58,7 @@ class DataGenConfig:
             G=d["G"],
             mass=d["mass"],
             min_distance=d["min_distance"],
+            max_position=d.get("max_position", float("inf")),
             pos_scale=d["pos_scale"],
             vel_scale=d["vel_scale"],
         )

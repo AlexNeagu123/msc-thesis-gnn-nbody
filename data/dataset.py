@@ -29,7 +29,8 @@ class NBodyDataset(Dataset):
         with h5py.File(path, "r") as f:
             trajectories = f["trajectories"][:]
 
-        _n_traj, _n_steps, n_particles, state_dim = trajectories.shape
+        self.n_trajectories, n_steps, n_particles, state_dim = trajectories.shape
+        self.steps_per_traj = n_steps - 1
 
         # consecutive pairs: input is step t, target is step t+1
         self.inputs = trajectories[:, :-1].reshape(-1, n_particles, state_dim)

@@ -1,0 +1,539 @@
+"""Shared evaluation utilities for model comparison.
+
+Provides computation helpers (energy, rollout) and plotting functions
+used by all model-specific evaluation notebooks (egnn.ipynb, hgnn.ipynb).
+
+References:
+    - Energy: T = 0.5 * sum(m * v^2), V = -sum(G * m_i * m_j / r_ij)
+    - Rollout: autoregressive single-step prediction fed back as input
+"""
+
+import numpy as np
+import numpy.typing as npt
+import torch
+from IPython.display import HTML, display
+from matplotlib import pyplot as plt
+from matplotlib.animation import FuncAnimation
+from torch import Tensor, nn
+from torch.utils.data import DataLoader
+
+from data.dataset import NBodyDataset
+
+COLORS = ["tab:blue", "tab:orange", "tab:green"]
+
+
+# --- computation ---
+
+
+def compute_energy(
+    states: npt.NDArray[np.floating],
+    G: float = 1.0,
+) -> npt.NDArray[np.floating]:
+    """Compute total energy (kinetic + gravitational potential) at each step.
+
+    Args:
+        states: array of shape (n_steps, n_particles, 5).
+            Features: [x, y, vx, vy, mass].
+        G: gravitational constant.
+
+    Returns:
+        Array of total energies, shape (n_steps,).
+    """
+    pos = states[..., :2]
+    vel = states[..., 2:4]
+    mass = states[..., 4]
+
+    kinetic = 0.5 * (mass * (vel**2).sum(axis=-1)).sum(axis=-1)
+
+    n_particles = states.shape[1]
+    potential = np.zeros(len(states))
+    for i in range(n_particles):
+        for j in range(i + 1, n_particles):
+            dx = pos[:, i] - pos[:, j]
+            r = np.sqrt((dx**2).sum(axis=-1))
+            potential -= G * mass[:, i] * mass[:, j] / r
+
+    return kinetic + potential
+
+
+def rollout(
+    model: nn.Module,
+    initial_state: Tensor,
+    n_steps: int,
+    device: torch.device,
+) -> npt.NDArray[np.floating]:
+    """Autoregressively predict n_steps from an initial state.
+
+    Args:
+        model: trained model mapping (batch, N, 5) -> (batch, N, 5).
+        initial_state: tensor of shape (n_particles, 5).
+        n_steps: number of forward steps to predict.
+        device: torch device.
+
+    Returns:
+        Predicted trajectory as numpy array, shape (n_steps + 1, n_particles, 5).
+    """
+    states = [initial_state.cpu()]
+    current = initial_state.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        for _ in range(n_steps):
+            pred = model(current)
+            states.append(pred.squeeze(0).cpu())
+            current = pred
+
+    return torch.stack(states).numpy()
+
+
+def run_all_rollouts(
+    model: nn.Module,
+    test_traj: npt.NDArray[np.floating],
+    device: torch.device,
+) -> npt.NDArray[np.floating]:
+    """Run autoregressive rollout on every test trajectory.
+
+    Args:
+        model: trained model.
+        test_traj: ground truth trajectories, shape (n_traj, n_steps, N, 5).
+        device: torch device.
+
+    Returns:
+        Predicted trajectories, shape (n_traj, n_steps, N, 5).
+    """
+    n_traj = test_traj.shape[0]
+    n_steps = test_traj.shape[1] - 1
+
+    predicted = []
+    for i in range(n_traj):
+        initial = torch.from_numpy(test_traj[i, 0]).float()
+        pred = rollout(model, initial, n_steps, device)
+        predicted.append(pred)
+
+    return np.array(predicted)
+
+
+def compute_single_step_metrics(
+    model: nn.Module,
+    test_path: str,
+    device: torch.device,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Compute per-sample single-step losses and min pairwise distances.
+
+    Args:
+        model: trained model.
+        test_path: path to test HDF5 file.
+        device: torch device.
+
+    Returns:
+        Tuple of (sample_losses, min_distances), each shape (n_samples,).
+    """
+    test_set = NBodyDataset(test_path)
+    loader = DataLoader(test_set, batch_size=256, shuffle=False)
+
+    sample_losses = []
+    with torch.no_grad():
+        for inputs, targets in loader:
+            inputs = inputs.to(device)
+            preds = model(inputs)
+            diff = (preds.cpu() - targets) ** 2
+            per_sample = diff[..., :4].mean(dim=(1, 2))
+            sample_losses.append(per_sample)
+
+    sample_losses = torch.cat(sample_losses).numpy()
+
+    # vectorized min pairwise distance
+    positions = test_set.inputs.numpy()[..., :2]
+    d01 = np.sqrt(((positions[:, 0] - positions[:, 1]) ** 2).sum(axis=-1))
+    d02 = np.sqrt(((positions[:, 0] - positions[:, 2]) ** 2).sum(axis=-1))
+    d12 = np.sqrt(((positions[:, 1] - positions[:, 2]) ** 2).sum(axis=-1))
+    min_distances = np.minimum(np.minimum(d01, d02), d12)
+
+    return sample_losses, min_distances
+
+
+# --- plotting ---
+
+
+def plot_trajectories(
+    test_traj: npt.NDArray[np.floating],
+    predicted: npt.NDArray[np.floating],
+    traj_indices: list[int],
+    model_name: str = "EGNN",
+) -> None:
+    """Plot side-by-side trajectory comparison (ground truth vs predicted).
+
+    Args:
+        test_traj: ground truth, shape (n_traj, n_steps, N, 5).
+        predicted: model predictions, shape (n_traj, n_steps, N, 5).
+        traj_indices: which trajectory indices to plot.
+        model_name: name for plot titles.
+    """
+    _fig, axes = plt.subplots(len(traj_indices), 2, figsize=(12, 6 * len(traj_indices)))
+
+    for row, idx in enumerate(traj_indices):
+        true = test_traj[idx]
+        pred = predicted[idx]
+
+        for col, (data, title) in enumerate(
+            [(true, "ground truth"), (pred, f"{model_name} predicted")]
+        ):
+            ax = axes[row, col]
+            for p in range(3):
+                ax.plot(
+                    data[:, p, 0],
+                    data[:, p, 1],
+                    color=COLORS[p],
+                    alpha=0.7,
+                    linewidth=0.8,
+                )
+                ax.scatter(
+                    data[0, p, 0],
+                    data[0, p, 1],
+                    color=COLORS[p],
+                    marker="o",
+                    s=30,
+                    zorder=5,
+                )
+                ax.scatter(
+                    data[-1, p, 0],
+                    data[-1, p, 1],
+                    color=COLORS[p],
+                    marker="x",
+                    s=30,
+                    zorder=5,
+                )
+            ax.set_title(f"trajectory {idx} - {title}")
+            ax.set_aspect("equal")
+            ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def animate_trajectories(
+    test_traj: npt.NDArray[np.floating],
+    predicted: npt.NDArray[np.floating],
+    traj_indices: list[int],
+    model_name: str = "EGNN",
+) -> None:
+    """Show side-by-side animated rollout for each trajectory.
+
+    Each panel has its own axis limits so both remain readable
+    even when the prediction diverges.
+
+    Args:
+        test_traj: ground truth, shape (n_traj, n_steps, N, 5).
+        predicted: model predictions, shape (n_traj, n_steps, N, 5).
+        traj_indices: which trajectory indices to animate.
+        model_name: name for plot titles.
+    """
+    for traj_idx in traj_indices:
+        _animate_single(test_traj[traj_idx], predicted[traj_idx], traj_idx, model_name)
+
+
+def _animate_single(
+    true: npt.NDArray[np.floating],
+    pred: npt.NDArray[np.floating],
+    traj_idx: int,
+    model_name: str,
+) -> None:
+    """Animate one trajectory comparison.
+
+    Args:
+        true: ground truth trajectory, shape (n_steps, N, 5).
+        pred: predicted trajectory, shape (n_steps, N, 5).
+        traj_idx: trajectory index for the title.
+        model_name: name for plot titles.
+    """
+    pad = 0.5
+    fig, (ax_true, ax_pred) = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, data, title in [
+        (ax_true, true, "ground truth"),
+        (ax_pred, pred, f"{model_name} predicted"),
+    ]:
+        xmin, xmax = data[:, :, 0].min() - pad, data[:, :, 0].max() + pad
+        ymin, ymax = data[:, :, 1].min() - pad, data[:, :, 1].max() + pad
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.3)
+        ax.set_title(f"trajectory {traj_idx} - {title}")
+
+    true_trails = [
+        ax_true.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS
+    ]
+    true_dots = [ax_true.plot([], [], "o", color=c, markersize=8)[0] for c in COLORS]
+    pred_trails = [
+        ax_pred.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS
+    ]
+    pred_dots = [ax_pred.plot([], [], "o", color=c, markersize=8)[0] for c in COLORS]
+
+    artists = true_trails + true_dots + pred_trails + pred_dots
+
+    def _init(artists: list = artists) -> list:
+        for a in artists:
+            a.set_data([], [])
+        return artists
+
+    def _update(
+        frame: int,
+        true: npt.NDArray = true,
+        pred: npt.NDArray = pred,
+        true_trails: list = true_trails,
+        true_dots: list = true_dots,
+        pred_trails: list = pred_trails,
+        pred_dots: list = pred_dots,
+    ) -> list:
+        for p in range(3):
+            true_trails[p].set_data(true[: frame + 1, p, 0], true[: frame + 1, p, 1])
+            true_dots[p].set_data([true[frame, p, 0]], [true[frame, p, 1]])
+            pred_trails[p].set_data(pred[: frame + 1, p, 0], pred[: frame + 1, p, 1])
+            pred_dots[p].set_data([pred[frame, p, 0]], [pred[frame, p, 1]])
+        return true_trails + true_dots + pred_trails + pred_dots
+
+    anim = FuncAnimation(
+        fig,
+        _update,
+        init_func=_init,
+        frames=len(true),
+        interval=50,
+        blit=True,
+    )
+    plt.close(fig)
+    display(HTML(anim.to_jshtml()))
+
+
+def plot_energy(
+    test_traj: npt.NDArray[np.floating],
+    predicted: npt.NDArray[np.floating],
+    traj_indices: list[int],
+    model_name: str = "EGNN",
+) -> None:
+    """Plot energy conservation comparison (ground truth vs predicted).
+
+    Also prints relative energy drift for all test trajectories.
+
+    Args:
+        test_traj: ground truth, shape (n_traj, n_steps, N, 5).
+        predicted: model predictions, shape (n_traj, n_steps, N, 5).
+        traj_indices: which trajectory indices to plot.
+        model_name: name for plot titles.
+    """
+    n_traj = test_traj.shape[0]
+    _fig, axes = plt.subplots(len(traj_indices), 1, figsize=(10, 4 * len(traj_indices)))
+
+    for row, idx in enumerate(traj_indices):
+        ax = axes[row]
+        true_energy = compute_energy(test_traj[idx])
+        pred_energy = compute_energy(predicted[idx])
+
+        steps = np.arange(len(true_energy))
+        ax.plot(
+            steps, true_energy, label="ground truth", color="tab:blue", linewidth=1.0
+        )
+        ax.plot(
+            steps,
+            pred_energy,
+            label=model_name,
+            color="tab:red",
+            linewidth=1.0,
+            alpha=0.8,
+        )
+
+        ax.set_xlabel("step")
+        ax.set_ylabel("total energy")
+        ax.set_title(f"trajectory {idx}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    print(
+        "relative energy drift at final step (|E_pred(T) - E_pred(0)| / |E_pred(0)|):"
+    )
+    for idx in range(n_traj):
+        pred_e = compute_energy(predicted[idx])
+        drift = abs((pred_e[-1] - pred_e[0]) / pred_e[0])
+        print(f"  trajectory {idx:2d}: {drift:.4f}")
+
+
+def plot_rollout_mse(
+    test_traj: npt.NDArray[np.floating],
+    predicted: npt.NDArray[np.floating],
+) -> None:
+    """Plot rollout MSE vs time step (linear and log scale).
+
+    Args:
+        test_traj: ground truth, shape (n_traj, n_steps, N, 5).
+        predicted: model predictions, shape (n_traj, n_steps, N, 5).
+    """
+    n_traj = test_traj.shape[0]
+    n_steps = test_traj.shape[1] - 1
+    mse_per_step = np.zeros((n_traj, n_steps + 1))
+
+    for i in range(n_traj):
+        diff = predicted[i] - test_traj[i]
+        diff_state = diff[..., :4]
+        mse_per_step[i] = (diff_state**2).mean(axis=(1, 2))
+
+    mean_mse = mse_per_step.mean(axis=0)
+    std_mse = mse_per_step.std(axis=0)
+    steps = np.arange(n_steps + 1)
+
+    _fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    ax.plot(steps, mean_mse, color="tab:red", linewidth=1.0)
+    ax.fill_between(
+        steps, mean_mse - std_mse, mean_mse + std_mse, color="tab:red", alpha=0.2
+    )
+    ax.set_xlabel("step")
+    ax.set_ylabel("MSE")
+    ax.set_title("rollout MSE vs time step (linear)")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.plot(steps[1:], mean_mse[1:], color="tab:red", linewidth=1.0)
+    ax.fill_between(
+        steps[1:],
+        np.maximum(mean_mse[1:] - std_mse[1:], 1e-10),
+        mean_mse[1:] + std_mse[1:],
+        color="tab:red",
+        alpha=0.2,
+    )
+    ax.set_xlabel("step")
+    ax.set_ylabel("MSE")
+    ax.set_title("rollout MSE vs time step (log)")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    print(f"step   1 MSE: {mean_mse[1]:.6f}")
+    print(f"step  50 MSE: {mean_mse[50]:.6f}")
+    print(f"step 100 MSE: {mean_mse[100]:.6f}")
+    print(f"step 199 MSE: {mean_mse[-1]:.6f}")
+
+
+def plot_pos_vel_error(
+    test_traj: npt.NDArray[np.floating],
+    predicted: npt.NDArray[np.floating],
+) -> None:
+    """Plot position vs velocity error decomposition over rollout.
+
+    Args:
+        test_traj: ground truth, shape (n_traj, n_steps, N, 5).
+        predicted: model predictions, shape (n_traj, n_steps, N, 5).
+    """
+    n_traj = test_traj.shape[0]
+    n_steps = test_traj.shape[1] - 1
+    pos_mse = np.zeros((n_traj, n_steps + 1))
+    vel_mse = np.zeros((n_traj, n_steps + 1))
+
+    for i in range(n_traj):
+        diff = predicted[i] - test_traj[i]
+        pos_mse[i] = (diff[..., :2] ** 2).mean(axis=(1, 2))
+        vel_mse[i] = (diff[..., 2:4] ** 2).mean(axis=(1, 2))
+
+    mean_pos = pos_mse.mean(axis=0)
+    mean_vel = vel_mse.mean(axis=0)
+    steps = np.arange(n_steps + 1)
+
+    _fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(steps, mean_pos, label="position MSE", color="tab:blue", linewidth=1.0)
+    ax.plot(steps, mean_vel, label="velocity MSE", color="tab:orange", linewidth=1.0)
+    ax.set_xlabel("step")
+    ax.set_ylabel("MSE")
+    ax.set_title("position vs velocity error over rollout")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_yscale("log")
+    plt.tight_layout()
+    plt.show()
+
+    print(
+        f"final step - position MSE: {mean_pos[-1]:.6f}, velocity MSE: {mean_vel[-1]:.6f}"
+    )
+    print(f"velocity/position ratio:   {mean_vel[-1] / mean_pos[-1]:.1f}x")
+
+
+def plot_loss_distribution(sample_losses: npt.NDArray[np.floating]) -> None:
+    """Plot histogram of per-sample single-step losses.
+
+    Args:
+        sample_losses: array of per-sample MSE values, shape (n_samples,).
+    """
+    print(f"total samples: {len(sample_losses)}")
+    print(f"mean loss:        {sample_losses.mean():.6f}")
+    print(f"median loss:      {np.median(sample_losses):.6f}")
+    print(f"max loss:         {sample_losses.max():.6f}")
+    print(f"99th percentile:  {np.percentile(sample_losses, 99):.6f}")
+
+    _fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    ax.hist(
+        sample_losses,
+        bins=100,
+        color="tab:blue",
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=0.3,
+    )
+    ax.set_xlabel("single-step MSE")
+    ax.set_ylabel("count")
+    ax.set_title("loss distribution (all samples)")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.hist(
+        sample_losses,
+        bins=100,
+        color="tab:blue",
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=0.3,
+    )
+    ax.set_xlabel("single-step MSE")
+    ax.set_ylabel("count")
+    ax.set_title("loss distribution (log scale)")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_loss_vs_distance(
+    min_distances: npt.NDArray[np.floating],
+    sample_losses: npt.NDArray[np.floating],
+) -> None:
+    """Plot single-step loss vs minimum pairwise distance.
+
+    Args:
+        min_distances: min pairwise distance per sample, shape (n_samples,).
+        sample_losses: per-sample MSE, shape (n_samples,).
+    """
+    _fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax = axes[0]
+    ax.scatter(min_distances, sample_losses, alpha=0.15, s=2, color="tab:blue")
+    ax.set_xlabel("min pairwise distance")
+    ax.set_ylabel("single-step MSE")
+    ax.set_title("loss vs closest particle pair")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.scatter(min_distances, sample_losses, alpha=0.15, s=2, color="tab:blue")
+    ax.set_xlabel("min pairwise distance")
+    ax.set_ylabel("single-step MSE")
+    ax.set_title("loss vs closest particle pair (log-log)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()

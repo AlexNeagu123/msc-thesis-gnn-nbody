@@ -19,7 +19,7 @@ from training._types import (
     TrainingParams,
     TrainResult,
 )
-from training.train import load_config, train
+from training.train import Trainer, load_config, train
 
 
 class DummyModel(nn.Module):
@@ -106,21 +106,35 @@ def test_train_histories_length(make_cfg: TrainConfig) -> None:
     assert len(result.val_history) == make_cfg.training.epochs
 
 
+def _find_run_dir(base: str) -> Path:
+    """Find the single run subdirectory inside a base directory.
+
+    Args:
+        base: path to the checkpoints or logs base directory.
+
+    Returns:
+        Path to the timestamped run subdirectory.
+    """
+    subdirs = sorted(Path(base).iterdir())
+    assert len(subdirs) == 1
+    return subdirs[0]
+
+
 def test_checkpoint_saved(make_cfg: TrainConfig) -> None:
     """Best and latest checkpoints are written to disk."""
     train(make_cfg, model=DummyModel())
 
-    ckpt_dir = Path(make_cfg.checkpointing.dir)
-    assert (ckpt_dir / "best.pt").exists()
-    assert (ckpt_dir / "latest.pt").exists()
+    run_dir = _find_run_dir(make_cfg.checkpointing.dir)
+    assert (run_dir / "best.pt").exists()
+    assert (run_dir / "latest.pt").exists()
 
 
 def test_checkpoint_contents(make_cfg: TrainConfig) -> None:
     """Checkpoint contains expected fields."""
     train(make_cfg, model=DummyModel())
 
-    ckpt_dir = Path(make_cfg.checkpointing.dir)
-    ckpt = torch.load(ckpt_dir / "best.pt", weights_only=False)
+    run_dir = _find_run_dir(make_cfg.checkpointing.dir)
+    ckpt = torch.load(run_dir / "best.pt", weights_only=False)
 
     assert isinstance(ckpt, Checkpoint)
     assert isinstance(ckpt.epoch, int)
@@ -133,12 +147,13 @@ def test_csv_log_written(make_cfg: TrainConfig) -> None:
     """CSV metrics file is created with header and one row per epoch."""
     train(make_cfg, model=DummyModel())
 
-    csv_path = Path(make_cfg.logging.dir) / "metrics.csv"
+    run_dir = _find_run_dir(make_cfg.logging.dir)
+    csv_path = run_dir / "metrics.csv"
     assert csv_path.exists()
 
     lines = csv_path.read_text().strip().split("\n")
     assert lines[0] == "epoch,train_loss,val_loss,lr"
-    assert len(lines) == make_cfg.training.epochs + 1  # header + epochs
+    assert len(lines) == make_cfg.training.epochs + 1
 
 
 def test_loss_decreases(make_cfg: TrainConfig) -> None:
@@ -201,6 +216,65 @@ def test_scheduler_enabled(make_cfg: TrainConfig) -> None:
     result = train(cfg, model=DummyModel())
 
     assert isinstance(result, TrainResult)
+
+
+def test_noise_injection_modifies_pos_vel_only(make_cfg: TrainConfig) -> None:
+    """Noise is applied to positions and velocities but not mass."""
+    cfg = TrainConfig(
+        model=make_cfg.model,
+        data=make_cfg.data,
+        training=TrainingParams(
+            epochs=1,
+            batch_size=8,
+            lr=1e-3,
+            weight_decay=0.0,
+            loss="mse",
+            noise_factor=0.05,
+            seed=42,
+            device="cpu",
+        ),
+        scheduler=SchedulerConfig(enabled=False),
+        checkpointing=CheckpointConfig(enabled=False),
+        logging=LoggingConfig(enabled=False),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+
+    inputs, _targets = next(iter(trainer.train_loader))
+    original_mass = inputs[..., 4:].clone()
+    original_pos = inputs[..., :2].clone()
+
+    noisy = trainer.apply_noise(inputs)
+
+    # mass column unchanged
+    assert torch.equal(noisy[..., 4:], original_mass)
+    # position and velocity columns changed
+    assert not torch.equal(noisy[..., :2], original_pos)
+    assert not torch.equal(noisy[..., 2:4], inputs[..., 2:4])
+
+
+def test_noise_injection_runs(make_cfg: TrainConfig) -> None:
+    """Training completes with noise injection enabled."""
+    cfg = TrainConfig(
+        model=make_cfg.model,
+        data=make_cfg.data,
+        training=TrainingParams(
+            epochs=2,
+            batch_size=8,
+            lr=1e-3,
+            weight_decay=0.0,
+            loss="mse",
+            noise_factor=0.05,
+            seed=42,
+            device="cpu",
+        ),
+        scheduler=SchedulerConfig(enabled=False),
+        checkpointing=CheckpointConfig(enabled=False),
+        logging=LoggingConfig(enabled=False),
+    )
+    result = train(cfg, model=DummyModel())
+
+    assert isinstance(result, TrainResult)
+    assert result.final_train_loss < float("inf")
 
 
 def test_load_config(tmp_path: Path) -> None:

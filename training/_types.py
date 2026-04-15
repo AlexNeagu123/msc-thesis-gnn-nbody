@@ -37,6 +37,7 @@ class TrainingParams:
     lr: float
     weight_decay: float
     loss: str = "mse"
+    noise_factor: float = 0.0
     seed: int = 42
     device: str = "auto"
 

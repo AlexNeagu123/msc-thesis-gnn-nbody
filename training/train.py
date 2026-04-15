@@ -12,6 +12,7 @@ References:
 
 import argparse
 import random
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,7 @@ from tqdm import tqdm
 from data.dataset import NBodyDataset
 from models.egnn import EGNN
 from training._types import Checkpoint, TrainConfig, TrainResult
+from training.diagnostics import TrainingDiagnostics
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -97,10 +99,16 @@ class Trainer:
                 testing or injecting custom architectures.
         """
         self.cfg = cfg
+        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         self._seed_everything(cfg.training.seed)
         self.device = self._resolve_device(cfg.training.device)
-        logger.info("device: %s | seed: %s", self.device, cfg.training.seed)
+        logger.info(
+            "run: %s | device: %s | seed: %s",
+            self.run_id,
+            self.device,
+            cfg.training.seed,
+        )
 
         self.train_loader, self.val_loader = self._setup_data()
         self.model = model.to(self.device) if model is not None else self._setup_model()
@@ -108,6 +116,15 @@ class Trainer:
         self.optimizer, self.scheduler = self._setup_optimizer()
         self.ckpt_dir = self._setup_checkpointing()
         self.csv_path = self._setup_logging()
+
+        # diagnostics log goes next to metrics.csv
+        diag_dir = self.csv_path.parent if self.csv_path is not None else None
+        self.diagnostics = TrainingDiagnostics(
+            pos_std=self.pos_std,
+            vel_std=self.vel_std,
+            log_dir=diag_dir,
+            dataset=self.train_loader.dataset,
+        )
 
     def run(self) -> TrainResult:
         """Execute the full training loop.
@@ -250,7 +267,7 @@ class Trainer:
         if not self.cfg.checkpointing.enabled:
             return None
 
-        ckpt_dir = Path(self.cfg.checkpointing.dir)
+        ckpt_dir = Path(self.cfg.checkpointing.dir) / self.run_id
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         return ckpt_dir
 
@@ -263,11 +280,27 @@ class Trainer:
         if not self.cfg.logging.enabled:
             return None
 
-        log_dir = Path(self.cfg.logging.dir)
+        log_dir = Path(self.cfg.logging.dir) / self.run_id
         log_dir.mkdir(parents=True, exist_ok=True)
         csv_path = log_dir / "metrics.csv"
         csv_path.write_text("epoch,train_loss,val_loss,lr\n")
         return csv_path
+
+    def apply_noise(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Add Gaussian noise to positions and velocities, leaving mass intact.
+
+        Noise std is noise_factor * data_std for each component.
+
+        Args:
+            inputs: batch of states, shape (B, N, 5).
+
+        Returns:
+            Noisy inputs with same shape. Mass column unchanged.
+        """
+        noise = torch.zeros_like(inputs)
+        noise[..., :2] = torch.randn_like(inputs[..., :2]) * self.cfg.training.noise_factor * self.pos_std
+        noise[..., 2:4] = torch.randn_like(inputs[..., 2:4]) * self.cfg.training.noise_factor * self.vel_std
+        return inputs + noise
 
     # --- epoch helpers ---
 
@@ -300,6 +333,9 @@ class Trainer:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
 
+                if training and self.cfg.training.noise_factor > 0:
+                    inputs = self.apply_noise(inputs)
+
                 preds = self.model(inputs)
                 loss = self.loss_fn(preds, targets)
 
@@ -309,8 +345,15 @@ class Trainer:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                     self.optimizer.step()
 
-                total_loss += loss.item()
+                batch_loss = loss.item()
+                total_loss += batch_loss
                 n_batches += 1
+
+                if training:
+                    self.diagnostics.check_batch(
+                        inputs, targets, preds.detach(),
+                        batch_loss, n_batches, len(loader),
+                    )
 
                 if verbose:
                     batches.set_postfix(loss=f"{total_loss / n_batches:.6f}")

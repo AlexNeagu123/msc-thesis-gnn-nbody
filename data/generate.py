@@ -194,7 +194,25 @@ class Generator:
             if self._has_close_encounter(states[step]):
                 return None
 
+            if self._has_ejection(states[step]):
+                return None
+
         return states, energies
+
+    def _has_ejection(self, snapshot: np.ndarray) -> bool:
+        """Check if any particle has been ejected beyond max_position.
+
+        Args:
+            snapshot: state at one timestep, shape (n_particles, 5).
+
+        Returns:
+            True if any particle's position exceeds the threshold.
+        """
+        max_pos = self.params.max_position
+        if max_pos == float("inf"):
+            return False
+        positions = snapshot[:, :2]
+        return bool(np.abs(positions).max() > max_pos)
 
     def _has_close_encounter(self, snapshot: np.ndarray) -> bool:
         """Check if any pair of particles is closer than min_distance.

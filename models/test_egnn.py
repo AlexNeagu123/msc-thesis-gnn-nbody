@@ -240,3 +240,17 @@ def test_integration_with_trainer(tmp_path: Path) -> None:
     assert isinstance(result, TrainResult)
     assert result.final_train_loss < float("inf")
     assert result.train_history[0] > result.train_history[-1]
+
+
+def test_coord_mlp_tiny_init() -> None:
+    """Coordinate MLP output layer has small weights and no bias."""
+    model = EGNN(hidden_dim=64, n_layers=4)
+
+    for layer in model.layers:
+        coord_out = layer.mlp_x[-1]  # last layer in the Sequential
+
+        # no bias
+        assert coord_out.bias is None
+
+        # weights are small (gain=0.001 keeps them well below 0.01)
+        assert coord_out.weight.abs().max().item() < 0.01
