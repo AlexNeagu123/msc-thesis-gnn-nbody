@@ -36,7 +36,10 @@ def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
 
     logger.info(
         "sweep: %d runs (%d lr x %d noise_factor), %d epochs each",
-        n_runs, len(LRS), len(NOISE_FACTORS), epochs,
+        n_runs,
+        len(LRS),
+        len(NOISE_FACTORS),
+        epochs,
     )
 
     results = []
@@ -44,7 +47,10 @@ def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
     for i, (lr, nf) in enumerate(grid):
         logger.info(
             "--- run %d/%d: lr=%.1e, noise_factor=%.2f ---",
-            i + 1, n_runs, lr, nf,
+            i + 1,
+            n_runs,
+            lr,
+            nf,
         )
 
         training = replace(
@@ -58,18 +64,23 @@ def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
         trainer = Trainer(cfg)
         result = trainer.run()
 
-        results.append({
-            "run_id": trainer.run_id,
-            "lr": lr,
-            "noise_factor": nf,
-            "best_val_loss": result.best_val_loss,
-            "best_epoch": result.best_epoch,
-            "final_train_loss": result.final_train_loss,
-        })
+        results.append(
+            {
+                "run_id": trainer.run_id,
+                "lr": lr,
+                "noise_factor": nf,
+                "best_val_loss": result.best_val_loss,
+                "best_epoch": result.best_epoch,
+                "final_train_loss": result.final_train_loss,
+            }
+        )
 
         logger.info(
             "run %d/%d done: best_val=%.6f at epoch %d",
-            i + 1, n_runs, result.best_val_loss, result.best_epoch,
+            i + 1,
+            n_runs,
+            result.best_val_loss,
+            result.best_epoch,
         )
 
     # summary table
@@ -78,7 +89,12 @@ def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
     logger.info("=" * 80)
     logger.info(
         "%-20s  %-10s  %-12s  %-12s  %-10s  %-12s",
-        "run_id", "lr", "noise_factor", "best_val", "best_epoch", "final_train",
+        "run_id",
+        "lr",
+        "noise_factor",
+        "best_val",
+        "best_epoch",
+        "final_train",
     )
     logger.info("-" * 80)
 

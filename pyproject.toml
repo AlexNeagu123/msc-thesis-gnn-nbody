@@ -46,6 +46,7 @@ select = [
 ignore = [
     "E501",   # line too long — we set line-length above, formatter handles it
     "N803",   # allow uppercase argument names (G for gravitational constant, etc.)
+    "N806",   # allow uppercase local variables (T, V, H for energies, H_i for embeddings)
     "D100",   # missing docstring in public module — we use module-level docstrings selectively
     "D104",   # missing docstring in public package
     "D212",   # multi-line summary on first line — we prefer D213 (summary on second line)

@@ -260,13 +260,9 @@ def _animate_single(
         ax.grid(True, alpha=0.3)
         ax.set_title(f"trajectory {traj_idx} - {title}")
 
-    true_trails = [
-        ax_true.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS
-    ]
+    true_trails = [ax_true.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS]
     true_dots = [ax_true.plot([], [], "o", color=c, markersize=8)[0] for c in COLORS]
-    pred_trails = [
-        ax_pred.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS
-    ]
+    pred_trails = [ax_pred.plot([], [], color=c, alpha=0.4, linewidth=0.8)[0] for c in COLORS]
     pred_dots = [ax_pred.plot([], [], "o", color=c, markersize=8)[0] for c in COLORS]
 
     artists = true_trails + true_dots + pred_trails + pred_dots
@@ -329,9 +325,7 @@ def plot_energy(
         pred_energy = compute_energy(predicted[idx])
 
         steps = np.arange(len(true_energy))
-        ax.plot(
-            steps, true_energy, label="ground truth", color="tab:blue", linewidth=1.0
-        )
+        ax.plot(steps, true_energy, label="ground truth", color="tab:blue", linewidth=1.0)
         ax.plot(
             steps,
             pred_energy,
@@ -350,9 +344,7 @@ def plot_energy(
     plt.tight_layout()
     plt.show()
 
-    print(
-        "relative energy drift at final step (|E_pred(T) - E_pred(0)| / |E_pred(0)|):"
-    )
+    print("relative energy drift at final step (|E_pred(T) - E_pred(0)| / |E_pred(0)|):")
     for idx in range(n_traj):
         pred_e = compute_energy(predicted[idx])
         drift = abs((pred_e[-1] - pred_e[0]) / pred_e[0])
@@ -386,9 +378,7 @@ def plot_rollout_mse(
 
     ax = axes[0]
     ax.plot(steps, mean_mse, color="tab:red", linewidth=1.0)
-    ax.fill_between(
-        steps, mean_mse - std_mse, mean_mse + std_mse, color="tab:red", alpha=0.2
-    )
+    ax.fill_between(steps, mean_mse - std_mse, mean_mse + std_mse, color="tab:red", alpha=0.2)
     ax.set_xlabel("step")
     ax.set_ylabel("MSE")
     ax.set_title("rollout MSE vs time step (linear)")
@@ -454,9 +444,7 @@ def plot_pos_vel_error(
     plt.tight_layout()
     plt.show()
 
-    print(
-        f"final step - position MSE: {mean_pos[-1]:.6f}, velocity MSE: {mean_vel[-1]:.6f}"
-    )
+    print(f"final step - position MSE: {mean_pos[-1]:.6f}, velocity MSE: {mean_vel[-1]:.6f}")
     print(f"velocity/position ratio:   {mean_vel[-1] / mean_pos[-1]:.1f}x")
 
 

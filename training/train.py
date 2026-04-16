@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from data.dataset import NBodyDataset
 from models.egnn import EGNN
+from models.hgnn import HGNN
 from training._types import Checkpoint, TrainConfig, TrainResult
 from training.diagnostics import TrainingDiagnostics
 from utils import get_logger
@@ -74,8 +75,13 @@ def build_model(
             vel_std=vel_std,
         )
     if name == "hgnn":
-        msg = "HGNN not implemented yet."
-        raise NotImplementedError(msg)
+        return HGNN(
+            hidden_dim=cfg.model.hidden_dim,
+            n_layers=cfg.model.n_layers,
+            dt=cfg.data.dt,
+            pos_std=pos_std,
+            vel_std=vel_std,
+        )
 
     msg = f"Unknown model: {name}"
     raise ValueError(msg)
@@ -298,8 +304,12 @@ class Trainer:
             Noisy inputs with same shape. Mass column unchanged.
         """
         noise = torch.zeros_like(inputs)
-        noise[..., :2] = torch.randn_like(inputs[..., :2]) * self.cfg.training.noise_factor * self.pos_std
-        noise[..., 2:4] = torch.randn_like(inputs[..., 2:4]) * self.cfg.training.noise_factor * self.vel_std
+        noise[..., :2] = (
+            torch.randn_like(inputs[..., :2]) * self.cfg.training.noise_factor * self.pos_std
+        )
+        noise[..., 2:4] = (
+            torch.randn_like(inputs[..., 2:4]) * self.cfg.training.noise_factor * self.vel_std
+        )
         return inputs + noise
 
     # --- epoch helpers ---
@@ -351,8 +361,12 @@ class Trainer:
 
                 if training:
                     self.diagnostics.check_batch(
-                        inputs, targets, preds.detach(),
-                        batch_loss, n_batches, len(loader),
+                        inputs,
+                        targets,
+                        preds.detach(),
+                        batch_loss,
+                        n_batches,
+                        len(loader),
                     )
 
                 if verbose:
