@@ -19,9 +19,9 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
-# descending order: aggressive configs run first
-LRS = [2e-3, 1e-3, 5e-4]
-NOISE_FACTORS = [0.1, 0.05, 0.0]
+# best candidates first, based on initial experiments
+LRS = [5e-4, 1e-3, 2e-3]
+NOISE_FACTORS = [0.0, 0.03, 0.05]
 
 
 def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
