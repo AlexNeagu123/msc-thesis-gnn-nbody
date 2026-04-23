@@ -1,12 +1,5 @@
 """Training diagnostics for monitoring health and debugging failures.
 
-Provides batch-level inspection hooks that the Trainer calls after each
-forward pass. Designed to be extensible: new checks are added as methods
-on TrainingDiagnostics, wired in via check_batch().
-
-Diagnostic output goes to a dedicated file (diagnostics.log in the run's
-log directory) to keep stdout clean during training.
-
 References:
     - Outlier batch analysis motivated by train loss spikes in chaotic
       3-body data (ejection trajectories with positions ~20-40).
@@ -24,19 +17,7 @@ logger = logging.getLogger("training.diagnostics")
 
 
 class TrainingDiagnostics:
-    """Batch-level diagnostics for the training loop.
-
-    Usage::
-
-        diag = TrainingDiagnostics(pos_std=1.68, vel_std=0.95)
-        # inside training loop:
-        diag.check_batch(inputs, targets, preds, loss, batch_idx, n_batches)
-
-    Args:
-        pos_std: position standard deviation from training data.
-        vel_std: velocity standard deviation from training data.
-        outlier_threshold: batch loss above this triggers detailed logging.
-    """
+    """Batch-level diagnostics for the training loop."""
 
     def __init__(
         self,
@@ -46,15 +27,7 @@ class TrainingDiagnostics:
         log_dir: Path | None = None,
         dataset: Dataset | None = None,
     ) -> None:
-        """Initialize diagnostics with normalization stats.
-
-        Args:
-            pos_std: position standard deviation for denormalization context.
-            vel_std: velocity standard deviation for denormalization context.
-            outlier_threshold: loss threshold for outlier detection.
-            log_dir: directory for diagnostics.log. If None, logs to stdout.
-            dataset: training dataset for sample location lookup.
-        """
+        """Initialize diagnostics with normalization stats."""
         self.pos_std = pos_std
         self.vel_std = vel_std
         self.outlier_threshold = outlier_threshold
@@ -62,11 +35,7 @@ class TrainingDiagnostics:
         self._setup_logger(log_dir)
 
     def _setup_logger(self, log_dir: Path | None) -> None:
-        """Configure file-based logging for diagnostics output.
-
-        Args:
-            log_dir: directory to write diagnostics.log into.
-        """
+        """Configure file-based logging for diagnostics output."""
         logger.setLevel(logging.WARNING)
         logger.propagate = False
         logger.handlers.clear()
@@ -94,19 +63,7 @@ class TrainingDiagnostics:
         batch_idx: int,
         n_batches: int,
     ) -> None:
-        """Run all batch-level diagnostics.
-
-        Called by the Trainer after each training batch. Dispatches to
-        individual checks based on the batch state.
-
-        Args:
-            inputs: input batch, shape (B, N, 5).
-            targets: target batch, shape (B, N, 5).
-            preds: model predictions (detached), shape (B, N, 5).
-            batch_loss: scalar loss for this batch.
-            batch_idx: current batch index (1-based).
-            n_batches: total batches in the epoch.
-        """
+        """Run all batch-level diagnostics."""
         if batch_loss > self.outlier_threshold:
             self._log_outlier(inputs, targets, preds, batch_loss, batch_idx, n_batches)
 
@@ -119,22 +76,8 @@ class TrainingDiagnostics:
         batch_idx: int,
         n_batches: int,
     ) -> None:
-        """Log detailed diagnostics for the worst sample in an outlier batch.
-
-        Finds the sample with the highest per-sample MSE and logs its input,
-        target, prediction, per-component errors, and the normalized values
-        the model actually saw internally.
-
-        Args:
-            inputs: input batch, shape (B, N, 5).
-            targets: target batch, shape (B, N, 5).
-            preds: prediction batch, shape (B, N, 5).
-            batch_loss: scalar loss for this batch.
-            batch_idx: current batch index (1-based).
-            n_batches: total batches in the epoch.
-        """
+        """Log details for the worst sample in an outlier batch."""
         with torch.no_grad():
-            # per-sample MSE across particles and state dims (exclude mass)
             diff = (preds - targets)[..., :4]
             per_sample = (diff**2).mean(dim=(1, 2))
             worst_idx = per_sample.argmax().item()
@@ -144,17 +87,11 @@ class TrainingDiagnostics:
             tgt = targets[worst_idx].cpu().numpy()
             pred = preds[worst_idx].cpu().numpy()
 
-            # min pairwise distance in input
             min_dist = self._min_pairwise_distance(inp[:, :2])
-
-            # per-component MSE for the worst sample
             comp_mse = ((pred[:, :4] - tgt[:, :4]) ** 2).mean(axis=0)
-
-            # normalized input (what the model actually saw)
             pos_norm = inp[:, :2] / self.pos_std
             vel_norm = inp[:, 2:4] / self.vel_std
 
-            # locate in dataset (match on clean targets, unaffected by noise)
             location = self._locate_sample(targets[worst_idx])
 
         logger.warning(
@@ -191,17 +128,7 @@ class TrainingDiagnostics:
         )
 
     def _locate_sample(self, target: Tensor) -> str:
-        """Find the trajectory index and step index for a given target state.
-
-        Searches the training dataset by matching the target tensor, then
-        converts the flat index into (trajectory, step) coordinates.
-
-        Args:
-            target: target state tensor, shape (n_particles, 5).
-
-        Returns:
-            String like "trajectory 42, step 187" or "unknown" if not found.
-        """
+        """Find the trajectory and step index for a target state."""
         if self.dataset is None:
             return "unknown (no dataset reference)"
 
@@ -219,14 +146,7 @@ class TrainingDiagnostics:
 
     @staticmethod
     def _min_pairwise_distance(positions: np.ndarray) -> float:
-        """Compute the minimum distance between any pair of particles.
-
-        Args:
-            positions: array of shape (n_particles, 2).
-
-        Returns:
-            Minimum pairwise Euclidean distance.
-        """
+        """Compute the minimum distance between any pair of particles."""
         n = len(positions)
         min_dist = float("inf")
         for i in range(n):

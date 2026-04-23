@@ -1,8 +1,5 @@
 """PyTorch Dataset wrapping the HDF5 trajectory files.
 
-Each sample is a (state_t, state_t+1) pair where state has shape (n_particles, 5).
-Model-agnostic: returns raw [x, y, vx, vy] per particle, no graph construction.
-
 References:
     - HDF5 layout defined in data/generate.py
     - EGNN data loading pattern: https://github.com/vgsatorras/egnn
@@ -14,15 +11,7 @@ from torch.utils.data import Dataset
 
 
 class NBodyDataset(Dataset):
-    """Loads trajectories from an HDF5 file and returns consecutive state pairs.
-
-    The HDF5 file contains:
-        /trajectories — (n_trajectories, n_steps, n_particles, 5)
-        /energies     — (n_trajectories, n_steps)
-
-    This dataset flattens all trajectories into (state_t, state_t+1) pairs.
-    Total samples = n_trajectories * (n_steps - 1).
-    """
+    """Load HDF5 trajectories as consecutive state pairs."""
 
     def __init__(self, path: str) -> None:
         """Load trajectories from HDF5 and create consecutive state pairs."""
@@ -32,11 +21,9 @@ class NBodyDataset(Dataset):
         self.n_trajectories, n_steps, n_particles, state_dim = trajectories.shape
         self.steps_per_traj = n_steps - 1
 
-        # consecutive pairs: input is step t, target is step t+1
         self.inputs = trajectories[:, :-1].reshape(-1, n_particles, state_dim)
         self.targets = trajectories[:, 1:].reshape(-1, n_particles, state_dim)
 
-        # convert to float32 tensors
         self.inputs = torch.from_numpy(self.inputs).float()
         self.targets = torch.from_numpy(self.targets).float()
 

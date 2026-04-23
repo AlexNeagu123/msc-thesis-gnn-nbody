@@ -31,24 +31,13 @@ class DummyModel(nn.Module):
         self.net = nn.Linear(5, 5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass, applied per-particle.
-
-        Args:
-            x: input tensor of shape (batch, n_particles, 5).
-
-        Returns:
-            Output tensor of shape (batch, n_particles, 5).
-        """
+        """Forward pass, applied per-particle."""
         return self.net(x)
 
 
 @pytest.fixture
 def sample_h5(tmp_path: Path) -> tuple[str, str]:
-    """Create small train and val HDF5 files.
-
-    Returns:
-        Tuple of (train_path, val_path).
-    """
+    """Create small train and val HDF5 files."""
     rng = np.random.default_rng(42)
 
     for name in ("train.h5", "val.h5"):
@@ -64,11 +53,7 @@ def sample_h5(tmp_path: Path) -> tuple[str, str]:
 
 @pytest.fixture
 def make_cfg(sample_h5: tuple[str, str], tmp_path: Path) -> TrainConfig:
-    """Create a minimal TrainConfig pointing to test data.
-
-    Returns:
-        TrainConfig with small epochs and batch size for fast tests.
-    """
+    """Create a minimal TrainConfig pointing to test data."""
     train_path, val_path = sample_h5
     return TrainConfig(
         model=ModelConfig(name="dummy", hidden_dim=4, n_layers=1),
@@ -107,14 +92,7 @@ def test_train_histories_length(make_cfg: TrainConfig) -> None:
 
 
 def _find_run_dir(base: str) -> Path:
-    """Find the single run subdirectory inside a base directory.
-
-    Args:
-        base: path to the checkpoints or logs base directory.
-
-    Returns:
-        Path to the timestamped run subdirectory.
-    """
+    """Find the single run subdirectory inside a base directory."""
     subdirs = sorted(Path(base).iterdir())
     assert len(subdirs) == 1
     return subdirs[0]
@@ -141,6 +119,11 @@ def test_checkpoint_contents(make_cfg: TrainConfig) -> None:
     assert isinstance(ckpt.val_loss, float)
     assert isinstance(ckpt.model, dict)
     assert isinstance(ckpt.optimizer, dict)
+    assert ckpt.config is not None
+    assert ckpt.model_name == make_cfg.model.name
+    assert ckpt.run_id == run_dir.name
+    assert isinstance(ckpt.pos_std, float)
+    assert isinstance(ckpt.vel_std, float)
 
 
 def test_csv_log_written(make_cfg: TrainConfig) -> None:

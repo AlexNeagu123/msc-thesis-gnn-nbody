@@ -1,13 +1,4 @@
-"""Grid search over learning rate and noise factor.
-
-Runs all combinations sequentially using the base EGNN config.
-Prints a summary table at the end with best val loss per run.
-
-Usage::
-
-    python -m training.sweep
-    python -m training.sweep --epochs 200 --config configs/egnn.yaml
-"""
+"""Grid search over learning rate and noise factor."""
 
 import argparse
 import itertools
@@ -25,12 +16,7 @@ NOISE_FACTORS = [0.0, 0.03, 0.05]
 
 
 def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
-    """Run grid search over lr and noise_factor.
-
-    Args:
-        base_cfg: base config to modify per run.
-        epochs: number of epochs per run.
-    """
+    """Run grid search over lr and noise_factor."""
     grid = list(itertools.product(LRS, NOISE_FACTORS))
     n_runs = len(grid)
 
@@ -83,7 +69,6 @@ def run_sweep(base_cfg: TrainConfig, epochs: int) -> None:
             result.best_epoch,
         )
 
-    # summary table
     logger.info("=" * 80)
     logger.info("SWEEP RESULTS")
     logger.info("=" * 80)

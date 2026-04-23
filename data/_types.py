@@ -1,8 +1,4 @@
-"""Typed contracts for the data pipeline.
-
-Defines configuration dataclasses for trajectory generation and dataset loading.
-DataGenConfig maps 1-to-1 with configs/data.yaml.
-"""
+"""Typed contracts for the data pipeline."""
 
 from __future__ import annotations
 
@@ -43,14 +39,7 @@ class DataGenConfig:
 
     @staticmethod
     def from_dict(d: dict) -> DataGenConfig:
-        """Build a DataGenConfig from a parsed YAML dict.
-
-        Args:
-            d: raw config dictionary from configs/data.yaml.
-
-        Returns:
-            Fully typed DataGenConfig instance.
-        """
+        """Build a DataGenConfig from a parsed YAML dict."""
         simulation = SimulationParams(
             n_particles=d["n_particles"],
             t_end=d["t_end"],

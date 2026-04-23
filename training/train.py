@@ -1,8 +1,5 @@
 """Shared training pipeline for EGNN and HGNN.
 
-Designed to be used as Trainer(cfg).run() for both standalone runs and
-programmatic calls (grid search, hyperparameter tuning).
-
 References:
     - Training hyperparams comparison: edu/research/training-hyperparams-comparison.md
     - Architecture specs: edu/architecture-specs.md
@@ -12,6 +9,8 @@ References:
 
 import argparse
 import random
+import subprocess
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -34,14 +33,7 @@ logger = get_logger(__name__)
 
 
 def load_config(path: str) -> TrainConfig:
-    """Load a YAML config file into a typed TrainConfig.
-
-    Args:
-        path: path to the YAML file.
-
-    Returns:
-        Parsed and validated TrainConfig.
-    """
+    """Load a YAML config file into a typed TrainConfig."""
     with Path(path).open() as f:
         raw = yaml.safe_load(f)
     return TrainConfig.from_dict(raw)
@@ -52,19 +44,7 @@ def build_model(
     pos_std: float = 1.0,
     vel_std: float = 1.0,
 ) -> nn.Module:
-    """Instantiate a model based on config.
-
-    Args:
-        cfg: typed training config.
-        pos_std: position standard deviation for input normalization.
-        vel_std: velocity standard deviation for input normalization.
-
-    Returns:
-        Model instance (not yet moved to device).
-
-    Raises:
-        ValueError: if model name is unknown.
-    """
+    """Instantiate a model based on config."""
     name = cfg.model.name
 
     if name == "egnn":
@@ -88,22 +68,10 @@ def build_model(
 
 
 class Trainer:
-    """Orchestrates model training, validation, checkpointing, and logging.
-
-    Usage::
-
-        cfg = load_config("configs/egnn.yaml")
-        result = Trainer(cfg).run()
-    """
+    """Orchestrate model training, validation, checkpointing, and logging."""
 
     def __init__(self, cfg: TrainConfig, model: nn.Module | None = None) -> None:
-        """Set up all training components from config.
-
-        Args:
-            cfg: typed training configuration.
-            model: optional pre-built model (bypasses build_model). Useful for
-                testing or injecting custom architectures.
-        """
+        """Set up all training components from config."""
         self.cfg = cfg
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -123,7 +91,6 @@ class Trainer:
         self.ckpt_dir = self._setup_checkpointing()
         self.csv_path = self._setup_logging()
 
-        # diagnostics log goes next to metrics.csv
         diag_dir = self.csv_path.parent if self.csv_path is not None else None
         self.diagnostics = TrainingDiagnostics(
             pos_std=self.pos_std,
@@ -133,11 +100,7 @@ class Trainer:
         )
 
     def run(self) -> TrainResult:
-        """Execute the full training loop.
-
-        Returns:
-            TrainResult with losses, best epoch, and full histories.
-        """
+        """Execute the full training loop."""
         cfg = self.cfg
         verbose = cfg.logging.enabled
         best_val_loss = float("inf")
@@ -177,19 +140,11 @@ class Trainer:
     # --- setup helpers ---
 
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
-        """Create train and val DataLoaders and compute normalization stats.
-
-        Computes position/velocity standard deviations from the training set
-        and stores them as self.pos_std / self.vel_std for model construction.
-
-        Returns:
-            Tuple of (train_loader, val_loader).
-        """
+        """Create data loaders and training-set normalization stats."""
         cfg = self.cfg
         train_set = NBodyDataset(cfg.data.train_path)
         val_set = NBodyDataset(cfg.data.val_path)
 
-        # compute normalization stats from training data
         self.pos_std = float(train_set.inputs[..., :2].std())
         self.vel_std = float(train_set.inputs[..., 2:4].std())
         logger.info("data stds: pos=%.4f, vel=%.4f", self.pos_std, self.vel_std)
@@ -218,11 +173,7 @@ class Trainer:
         return train_loader, val_loader
 
     def _setup_model(self) -> nn.Module:
-        """Build model and optionally print summary.
-
-        Returns:
-            Model moved to the target device.
-        """
+        """Build the model and optionally print a summary."""
         model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(self.device)
 
         if self.cfg.model.summary:
@@ -241,11 +192,7 @@ class Trainer:
     def _setup_optimizer(
         self,
     ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None]:
-        """Create optimizer and optional LR scheduler.
-
-        Returns:
-            Tuple of (optimizer, scheduler or None).
-        """
+        """Create optimizer and optional LR scheduler."""
         cfg = self.cfg
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -265,11 +212,7 @@ class Trainer:
         return optimizer, scheduler
 
     def _setup_checkpointing(self) -> Path | None:
-        """Create checkpoint directory if enabled.
-
-        Returns:
-            Checkpoint directory path, or None if disabled.
-        """
+        """Create checkpoint directory if enabled."""
         if not self.cfg.checkpointing.enabled:
             return None
 
@@ -278,11 +221,7 @@ class Trainer:
         return ckpt_dir
 
     def _setup_logging(self) -> Path | None:
-        """Create log directory and CSV header if enabled.
-
-        Returns:
-            Path to the CSV metrics file, or None if disabled.
-        """
+        """Create log directory and CSV header if enabled."""
         if not self.cfg.logging.enabled:
             return None
 
@@ -293,16 +232,7 @@ class Trainer:
         return csv_path
 
     def apply_noise(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Add Gaussian noise to positions and velocities, leaving mass intact.
-
-        Noise std is noise_factor * data_std for each component.
-
-        Args:
-            inputs: batch of states, shape (B, N, 5).
-
-        Returns:
-            Noisy inputs with same shape. Mass column unchanged.
-        """
+        """Add Gaussian noise to positions and velocities."""
         noise = torch.zeros_like(inputs)
         noise[..., :2] = (
             torch.randn_like(inputs[..., :2]) * self.cfg.training.noise_factor * self.pos_std
@@ -315,15 +245,7 @@ class Trainer:
     # --- epoch helpers ---
 
     def _run_epoch(self, *, training: bool, verbose: bool) -> float:
-        """Run one epoch of training or validation.
-
-        Args:
-            training: if True, run a training step. If False, run eval only.
-            verbose: if True, show a tqdm progress bar.
-
-        Returns:
-            Mean loss over the epoch.
-        """
+        """Run one train or validation epoch."""
         if training:
             self.model.train()
             loader = self.train_loader
@@ -375,13 +297,7 @@ class Trainer:
         return total_loss / n_batches
 
     def _checkpoint(self, epoch: int, val_loss: float, is_best: bool) -> None:
-        """Save model checkpoint if enabled.
-
-        Args:
-            epoch: current epoch number.
-            val_loss: validation loss for this epoch.
-            is_best: whether this is the best validation loss so far.
-        """
+        """Save model checkpoint if enabled."""
         if self.ckpt_dir is None:
             return
 
@@ -390,6 +306,12 @@ class Trainer:
             model=self.model.state_dict(),
             optimizer=self.optimizer.state_dict(),
             val_loss=val_loss,
+            config=asdict(self.cfg),
+            model_name=self.cfg.model.name,
+            run_id=self.run_id,
+            pos_std=self.pos_std,
+            vel_std=self.vel_std,
+            git_commit=self._git_commit(),
         )
         torch.save(ckpt, self.ckpt_dir / "latest.pt")
         if is_best:
@@ -402,14 +324,7 @@ class Trainer:
         val_loss: float,
         lr: float,
     ) -> None:
-        """Write epoch metrics to CSV and console.
-
-        Args:
-            epoch: current epoch number.
-            train_loss: training loss for this epoch.
-            val_loss: validation loss for this epoch.
-            lr: current learning rate.
-        """
+        """Write epoch metrics to CSV and console."""
         if self.csv_path is not None:
             with self.csv_path.open("a") as f:
                 f.write(f"{epoch},{train_loss:.6f},{val_loss:.6f},{lr:.2e}\n")
@@ -427,14 +342,7 @@ class Trainer:
 
     @staticmethod
     def _resolve_device(device_cfg: str) -> torch.device:
-        """Resolve device string to a torch.device.
-
-        Args:
-            device_cfg: one of "auto", "cpu", "cuda", "mps".
-
-        Returns:
-            Resolved torch.device.
-        """
+        """Resolve device string to a torch.device."""
         if device_cfg != "auto":
             return torch.device(device_cfg)
 
@@ -446,11 +354,7 @@ class Trainer:
 
     @staticmethod
     def _seed_everything(seed: int) -> None:
-        """Set random seeds for reproducibility.
-
-        Args:
-            seed: integer seed value.
-        """
+        """Set random seeds for reproducibility."""
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -459,17 +363,7 @@ class Trainer:
 
     @staticmethod
     def _build_loss_fn(name: str) -> nn.Module:
-        """Build a loss function by name.
-
-        Args:
-            name: one of "mse", "mae".
-
-        Returns:
-            Loss module.
-
-        Raises:
-            ValueError: if loss name is unknown.
-        """
+        """Build a loss function by name."""
         losses = {
             "mse": nn.MSELoss(),
             "mae": nn.L1Loss(),
@@ -479,17 +373,22 @@ class Trainer:
             raise ValueError(msg)
         return losses[name]
 
+    @staticmethod
+    def _git_commit() -> str | None:
+        """Return the current git commit hash when available."""
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
 
 def train(cfg: TrainConfig, model: nn.Module | None = None) -> TrainResult:
-    """Convenience function wrapping Trainer.
-
-    Args:
-        cfg: typed training configuration.
-        model: optional pre-built model (bypasses build_model).
-
-    Returns:
-        TrainResult with losses, best epoch, and full histories.
-    """
+    """Run Trainer with a compact function call."""
     return Trainer(cfg, model=model).run()
 
 

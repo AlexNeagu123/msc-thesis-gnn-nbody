@@ -44,13 +44,13 @@ select = [
     "ERA",  # commented-out code
 ]
 ignore = [
-    "E501",   # line too long — we set line-length above, formatter handles it
+    "E501",   # line too long; formatter handles it
     "N803",   # allow uppercase argument names (G for gravitational constant, etc.)
     "N806",   # allow uppercase local variables (T, V, H for energies, H_i for embeddings)
-    "D100",   # missing docstring in public module — we use module-level docstrings selectively
+    "D100",   # missing docstring in public module; we use them selectively
     "D104",   # missing docstring in public package
-    "D212",   # multi-line summary on first line — we prefer D213 (summary on second line)
-    "D203",   # blank line before class docstring — conflicts with D211
+    "D212",   # multi-line summary on first line; we prefer D213
+    "D203",   # blank line before class docstring; conflicts with D211
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -66,3 +66,9 @@ indent-style = "space"
 [tool.pytest.ini_options]
 testpaths = ["."]
 pythonpath = ["."]
+
+[tool.pyright]
+include = ["."]
+exclude = [".venv", "**/__pycache__", "notebooks"]
+# diagnostics off; ruff owns lint. pyright is kept for navigation only.
+typeCheckingMode = "off"

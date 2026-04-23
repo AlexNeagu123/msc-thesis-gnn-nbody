@@ -1,14 +1,11 @@
-"""Trajectory generation using REBOUND + IAS15.
-
-Generates chaotic 3-body gravitational trajectories and saves them to HDF5.
-Trajectories with close encounters are filtered out during generation.
+"""Trajectory generation using REBOUND and IAS15.
 
 References:
     - REBOUND docs (simulation API, IAS15 integrator): https://rebound.hanno-rein.de/
     - IAS15 adaptive timestep paper: https://arxiv.org/html/2401.02849v1
     - EGNN N-body data generation (Gaussian init, burn-in approach): https://arxiv.org/pdf/2102.09844
     - EGNN reference implementation: https://github.com/vgsatorras/egnn
-    - HGNN (Bishnoi et al. 2023) — repulsive gravity setup: https://arxiv.org/abs/2307.05299
+    - HGNN (Bishnoi et al. 2023), repulsive gravity setup: https://arxiv.org/abs/2307.05299
     - Architecture specs (data specification): ../../../edu/architecture-specs.md
 """
 
@@ -27,20 +24,10 @@ logger = get_logger(__name__)
 
 
 class Generator:
-    """Generates chaotic N-body trajectories and saves them to HDF5.
-
-    Usage::
-
-        cfg = DataGenConfig.from_dict(raw)
-        Generator(cfg).run()
-    """
+    """Generate chaotic N-body trajectories and save them to HDF5."""
 
     def __init__(self, cfg: DataGenConfig) -> None:
-        """Initialize the generator with a typed config.
-
-        Args:
-            cfg: data generation configuration.
-        """
+        """Store the typed generation config."""
         self.cfg = cfg
         self.params = cfg.simulation
 
@@ -64,13 +51,7 @@ class Generator:
         output_path: str,
         seed: int,
     ) -> None:
-        """Generate one dataset split and save to HDF5.
-
-        Args:
-            n_trajectories: number of valid trajectories to generate.
-            output_path: path to write the HDF5 file.
-            seed: random seed for reproducibility.
-        """
+        """Generate one dataset split and save it to HDF5."""
         rng = np.random.default_rng(seed)
         n_steps = int(self.params.t_end / self.params.dt)
 
@@ -112,14 +93,7 @@ class Generator:
         self,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Simulate one trajectory using REBOUND + IAS15.
-
-        Args:
-            rng: numpy random generator.
-
-        Returns:
-            Tuple of (states, energies) or None if a close encounter is detected.
-        """
+        """Simulate one trajectory, rejecting close encounters and ejections."""
         params = self.params
 
         sim = rebound.Simulation()
@@ -128,7 +102,6 @@ class Generator:
 
         positions, velocities = self._sample_initial_conditions(rng)
 
-        # add particles to simulation (2D: z=0, vz=0)
         for i in range(params.n_particles):
             sim.add(
                 m=params.mass,
@@ -146,20 +119,12 @@ class Generator:
         self,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Sample Gaussian initial positions and velocities with COM subtracted.
-
-        Args:
-            rng: numpy random generator.
-
-        Returns:
-            Tuple of (positions, velocities), each shape (n_particles, 2).
-        """
+        """Sample Gaussian initial conditions with center-of-mass drift removed."""
         params = self.params
 
         positions = rng.normal(0, params.pos_scale, size=(params.n_particles, 2))
         velocities = rng.normal(0, params.vel_scale, size=(params.n_particles, 2))
 
-        # zero out center of mass (isolated system, no drift)
         positions -= positions.mean(axis=0)
         velocities -= velocities.mean(axis=0)
 
@@ -169,14 +134,7 @@ class Generator:
         self,
         sim: rebound.Simulation,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Integrate the simulation and record snapshots.
-
-        Args:
-            sim: initialized REBOUND simulation.
-
-        Returns:
-            Tuple of (states, energies) or None if a close encounter is detected.
-        """
+        """Integrate the simulation and record snapshots."""
         params = self.params
         n_steps = int(params.t_end / params.dt)
         states = np.zeros((n_steps, params.n_particles, 5))
@@ -200,14 +158,7 @@ class Generator:
         return states, energies
 
     def _has_ejection(self, snapshot: np.ndarray) -> bool:
-        """Check if any particle has been ejected beyond max_position.
-
-        Args:
-            snapshot: state at one timestep, shape (n_particles, 5).
-
-        Returns:
-            True if any particle's position exceeds the threshold.
-        """
+        """Check if any particle exceeds the position threshold."""
         max_pos = self.params.max_position
         if max_pos == float("inf"):
             return False
@@ -215,14 +166,7 @@ class Generator:
         return bool(np.abs(positions).max() > max_pos)
 
     def _has_close_encounter(self, snapshot: np.ndarray) -> bool:
-        """Check if any pair of particles is closer than min_distance.
-
-        Args:
-            snapshot: state at one timestep, shape (n_particles, 4).
-
-        Returns:
-            True if a close encounter is detected.
-        """
+        """Check whether any particle pair is too close."""
         for i in range(self.params.n_particles):
             for j in range(i + 1, self.params.n_particles):
                 dx = snapshot[i, 0] - snapshot[j, 0]
@@ -241,16 +185,7 @@ class Generator:
         seed: int,
         attempted: int,
     ) -> None:
-        """Save trajectories and metadata to HDF5.
-
-        Args:
-            states: trajectory data, shape (n_traj, n_steps, n_particles, 4).
-            energies: energy data, shape (n_traj, n_steps).
-            n_trajectories: number of trajectories.
-            output_path: path to write the HDF5 file.
-            seed: random seed used for this split.
-            attempted: total number of trajectory attempts.
-        """
+        """Save trajectories and metadata to HDF5."""
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -281,15 +216,7 @@ def generate_trajectory(
     params: SimulationParams,
     rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Convenience function for simulating a single trajectory.
-
-    Args:
-        params: simulation parameters.
-        rng: numpy random generator for reproducibility.
-
-    Returns:
-        Tuple of (states, energies) or None if a close encounter is detected.
-    """
+    """Simulate one trajectory with a temporary Generator."""
     if rng is None:
         rng = np.random.default_rng()
 

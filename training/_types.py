@@ -1,8 +1,4 @@
-"""Typed contracts for the training pipeline.
-
-Defines configuration, checkpoint, and result dataclasses.
-TrainConfig maps 1-to-1 with the YAML config files (e.g. configs/egnn.yaml).
-"""
+"""Typed contracts for the training pipeline."""
 
 from __future__ import annotations
 
@@ -81,14 +77,7 @@ class TrainConfig:
 
     @staticmethod
     def from_dict(d: dict) -> TrainConfig:
-        """Build a TrainConfig from a plain dict (e.g. parsed YAML).
-
-        Args:
-            d: raw config dictionary.
-
-        Returns:
-            Fully typed TrainConfig instance.
-        """
+        """Build a TrainConfig from a parsed YAML dict."""
         return TrainConfig(
             model=ModelConfig(**d["model"]),
             data=DataConfig(**d["data"]),
@@ -107,6 +96,12 @@ class Checkpoint:
     model: dict
     optimizer: dict
     val_loss: float
+    config: dict | None = None
+    model_name: str | None = None
+    run_id: str | None = None
+    pos_std: float | None = None
+    vel_std: float | None = None
+    git_commit: str | None = None
 
 
 @dataclass

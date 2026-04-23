@@ -21,15 +21,7 @@ from training.train import train
 
 
 def _make_state(batch: int = 4, n_particles: int = 3) -> torch.Tensor:
-    """Create a random state tensor [x, y, vx, vy, mass].
-
-    Args:
-        batch: batch size.
-        n_particles: number of particles.
-
-    Returns:
-        State tensor of shape (batch, n_particles, 5).
-    """
+    """Create a random state tensor [x, y, vx, vy, mass]."""
     torch.manual_seed(0)
     state = torch.randn(batch, n_particles, 4)
     mass = torch.ones(batch, n_particles, 1)

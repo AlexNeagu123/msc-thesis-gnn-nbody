@@ -46,7 +46,7 @@ def test_trajectory_state_columns(
     default_params: SimulationParams,
     rng: np.random.Generator,
 ) -> None:
-    """State columns are [x, y, vx, vy, m] — all values should be finite."""
+    """State columns are [x, y, vx, vy, m]; all values should be finite."""
     result = generate_trajectory(default_params, rng)
     assert result is not None
 
