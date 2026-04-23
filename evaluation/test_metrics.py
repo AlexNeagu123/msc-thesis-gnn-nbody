@@ -1,8 +1,8 @@
-"""Tests for evaluation/_utils.py."""
+"""Tests for evaluation/metrics.py."""
 
 import numpy as np
 
-from evaluation._utils import compute_rollout_mse, min_pairwise_distances
+from evaluation.metrics import compute_rollout_mse, min_pairwise_distances
 
 
 def test_min_pairwise_distances_supports_four_particles() -> None:

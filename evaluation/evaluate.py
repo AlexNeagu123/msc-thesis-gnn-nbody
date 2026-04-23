@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 from data.dataset import NBodyDataset
-from evaluation._utils import (
+from evaluation.metrics import (
     RolloutMSE,
     compute_energy,
     compute_rollout_mse,
