@@ -25,7 +25,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["notebooks/"]
+extend-exclude = ["colab/"]
 
 [tool.ruff.lint]
 select = [
@@ -69,6 +69,6 @@ pythonpath = ["."]
 
 [tool.pyright]
 include = ["."]
-exclude = [".venv", "**/__pycache__", "notebooks"]
+exclude = [".venv", "**/__pycache__", "colab"]
 # diagnostics off; ruff owns lint. pyright is kept for navigation only.
 typeCheckingMode = "off"
