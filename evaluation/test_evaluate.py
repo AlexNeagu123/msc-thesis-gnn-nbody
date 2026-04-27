@@ -151,9 +151,8 @@ def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
 
     assert (output_dir / "metrics.json").exists()
     assert (output_dir / "summary.csv").exists()
-    assert report["metadata"]["model_name"] == "egnn"
-    assert "learned_hamiltonian" not in report["energy"]
-    assert "physical" in report["energy"]
+    assert report.metadata.model_name == "egnn"
+    assert report.energy.learned_hamiltonian is None
 
     data = json.loads((output_dir / "metrics.json").read_text())
     assert data["metadata"]["checkpoint_epoch"] == 1
@@ -217,4 +216,4 @@ def test_evaluate_hgnn_reports_learned_hamiltonian(tmp_path: Path) -> None:
         device="cpu",
     )
 
-    assert "learned_hamiltonian" in report["energy"]
+    assert report.energy.learned_hamiltonian is not None
