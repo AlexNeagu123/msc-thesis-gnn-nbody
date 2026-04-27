@@ -137,6 +137,10 @@ def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
     assert "single_step" in data
     assert "p95_mse" in data["rollout"]["steps"]["1"]
     assert "mean_finite_mse" in data["rollout"]["steps"]["1"]
+    assert data["rollout"]["curves"]["step"] == [0, 1, 2, 3]
+    assert len(data["rollout"]["curves"]["median_mse"]) == 4
+    assert len(data["rollout"]["curves"]["p95_mse"]) == 4
+    assert data["rollout"]["curves"]["finite_fraction"][0] == 1.0
     assert "thresholds" in data["rollout"]
     assert "10" in data["rollout"]["thresholds"]
 

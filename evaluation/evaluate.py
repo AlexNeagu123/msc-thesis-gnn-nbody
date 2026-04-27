@@ -154,6 +154,7 @@ def _build_report(
         },
         "rollout": {
             "steps": _rollout_steps(rollout_mse, steps),
+            "curves": _rollout_curves(rollout_mse),
             "first_nonfinite_step": first_nonfinite,
             "thresholds": divergence,
             "finite_final_fraction": _float(rollout_mse.finite_fraction[-1]),
@@ -242,10 +243,27 @@ def _rollout_steps(
         str(step): {
             "mean_finite_mse": _float(rollout_mse.mean[step]),
             "median_mse": _float(rollout_mse.median[step]),
-            "p95_mse": _float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95)),
+            "p95_mse": _optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95)),
             "finite_fraction": _float(rollout_mse.finite_fraction[step]),
         }
         for step in steps
+    }
+
+
+def _rollout_curves(rollout_mse: RolloutMSE) -> dict[str, list[int | float | None]]:
+    """Return full per-step rollout curves for crossover analysis."""
+    n_steps = len(rollout_mse.mean)
+    steps = list(range(n_steps))
+
+    return {
+        "step": steps,
+        "mean_finite_mse": [_float(value) for value in rollout_mse.mean],
+        "median_mse": [_float(value) for value in rollout_mse.median],
+        "p95_mse": [
+            _optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95))
+            for step in steps
+        ],
+        "finite_fraction": [_float(value) for value in rollout_mse.finite_fraction],
     }
 
 
@@ -393,6 +411,13 @@ def _float(value: object) -> float | None:
     if not np.isfinite(value):
         return None
     return value
+
+
+def _optional_float(value: object | None) -> float | None:
+    """Convert optional scalar values to JSON-safe floats."""
+    if value is None:
+        return None
+    return _float(value)
 
 
 def _summary_row(report: dict[str, object]) -> dict[str, object]:
