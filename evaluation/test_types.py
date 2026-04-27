@@ -225,13 +225,84 @@ def test_summary_row_includes_learned_h_for_hgnn() -> None:
     assert "learned_h_max_drift_max" in row
 
 
-def test_loads_existing_metrics_json_if_present() -> None:
-    """If a real metrics.json exists locally, from_dict must not crash."""
-    real = Path("results/evaluation/egnn/20260416_234825/metrics.json")
-    if not real.exists():
+def test_existing_metrics_json_round_trip() -> None:
+    """Every on-disk metrics.json must survive from_dict -> to_dict unchanged."""
+    files = sorted(Path("results/evaluation").glob("**/metrics.json"))
+    if not files:
         return
-    with real.open() as f:
-        d = json.load(f)
-    report = EvaluationReport.from_dict(d)
-    assert report.metadata.model_name == "egnn"
-    assert report.energy.learned_hamiltonian is None
+    for path in files:
+        with path.open() as f:
+            original = json.load(f)
+        out = EvaluationReport.from_dict(original).to_dict()
+        assert out == original, f"round-trip mismatch for {path}"
+
+
+_EXPECTED_STATIC_COLUMNS = (
+    "model_name",
+    "run_id",
+    "checkpoint_epoch",
+    "checkpoint_val_loss",
+    "n_trajectories",
+    "n_frames",
+    "n_transitions",
+    "n_particles",
+    "single_step_mse_mean",
+    "single_step_mse_median",
+    "single_step_mse_p95",
+    "single_step_mse_p99",
+    "single_step_mse_max",
+    "physical_energy_final_drift_mean",
+    "physical_energy_final_drift_median",
+    "physical_energy_final_drift_p95",
+    "physical_energy_final_drift_max",
+    "physical_energy_max_drift_mean",
+    "physical_energy_max_drift_median",
+    "physical_energy_max_drift_p95",
+    "physical_energy_max_drift_max",
+)
+
+_EXPECTED_LEARNED_H_COLUMNS = (
+    "learned_h_final_drift_mean",
+    "learned_h_final_drift_median",
+    "learned_h_final_drift_p95",
+    "learned_h_final_drift_max",
+    "learned_h_max_drift_mean",
+    "learned_h_max_drift_median",
+    "learned_h_max_drift_p95",
+    "learned_h_max_drift_max",
+)
+
+
+def test_summary_row_egnn_column_order_pinned() -> None:
+    """EGNN CSV header order is pinned: static + per-step + final + per-threshold."""
+    report = EvaluationReport.from_dict(_egnn_report_dict())
+    cols = tuple(SummaryRow.from_report(report).to_csv_row().keys())
+
+    expected = (
+        *_EXPECTED_STATIC_COLUMNS,
+        # per-step in report.rollout.steps insertion order ("1", "10")
+        "rollout_step_1_mean_finite_mse",
+        "rollout_step_1_median_mse",
+        "rollout_step_1_p95_mse",
+        "rollout_step_1_finite_fraction",
+        "rollout_step_10_mean_finite_mse",
+        "rollout_step_10_median_mse",
+        "rollout_step_10_p95_mse",
+        "rollout_step_10_finite_fraction",
+        "rollout_final_finite_fraction",
+        # per-threshold in report.rollout.thresholds insertion order ("1", "10")
+        "rollout_final_fraction_below_mse_1",
+        "rollout_final_fraction_below_mse_10",
+    )
+    assert cols == expected
+
+
+def test_summary_row_hgnn_appends_learned_h_columns() -> None:
+    """HGNN CSV header is the EGNN header followed by learned_h_* columns."""
+    egnn_report = EvaluationReport.from_dict(_egnn_report_dict())
+    hgnn_report = EvaluationReport.from_dict(_hgnn_report_dict())
+
+    egnn_cols = tuple(SummaryRow.from_report(egnn_report).to_csv_row().keys())
+    hgnn_cols = tuple(SummaryRow.from_report(hgnn_report).to_csv_row().keys())
+
+    assert hgnn_cols == egnn_cols + _EXPECTED_LEARNED_H_COLUMNS
