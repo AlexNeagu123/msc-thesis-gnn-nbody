@@ -5,12 +5,12 @@ model:
   summary: true
 
 data:
-  train_path: data/output/train.h5
-  val_path: data/output/val.h5
+  train_path: data/output/scaling/train.h5
+  val_path: data/output/scaling/val.h5
   dt: 0.05
 
 training:
-  epochs: 20
+  epochs: 300
   batch_size: 128
   lr: 1.0e-3
   weight_decay: 1.0e-5

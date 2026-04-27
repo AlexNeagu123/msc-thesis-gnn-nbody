@@ -36,6 +36,39 @@ def test_dataset_length(sample_h5: tuple[str, np.ndarray]) -> None:
     assert len(ds) == n_traj * (n_steps - 1)
 
 
+def test_dataset_can_use_trajectory_prefix(sample_h5: tuple[str, np.ndarray]) -> None:
+    """Data-scaling runs can use a deterministic prefix of the train file."""
+    path, trajectories = sample_h5
+    ds = NBodyDataset(path, n_trajectories=2)
+
+    assert ds.n_trajectories == 2
+    assert len(ds) == 2 * (trajectories.shape[1] - 1)
+
+    state_t, _ = ds[0]
+    expected_t = torch.from_numpy(trajectories[0, 0]).float()
+    assert torch.allclose(state_t, expected_t)
+
+
+def test_dataset_rejects_too_many_requested_trajectories(
+    sample_h5: tuple[str, np.ndarray],
+) -> None:
+    """Scaling labels should not silently exceed the available HDF5 data."""
+    path, trajectories = sample_h5
+
+    with pytest.raises(ValueError, match=r"requested .* but only"):
+        NBodyDataset(path, n_trajectories=trajectories.shape[0] + 1)
+
+
+def test_dataset_rejects_non_positive_trajectory_count(
+    sample_h5: tuple[str, np.ndarray],
+) -> None:
+    """A zero-sized scaling dataset is invalid."""
+    path, _ = sample_h5
+
+    with pytest.raises(ValueError, match="must be positive"):
+        NBodyDataset(path, n_trajectories=0)
+
+
 def test_dataset_shapes(sample_h5: tuple[str, np.ndarray]) -> None:
     """Each sample returns two tensors of shape (n_particles, 5)."""
     path, _ = sample_h5

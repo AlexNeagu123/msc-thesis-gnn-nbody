@@ -1,9 +1,9 @@
-train_path: data/output/train.h5
-val_path: data/output/val.h5
-test_path: data/output/test.h5
+train_path: data/output/scaling/train.h5
+val_path: data/output/scaling/val.h5
+test_path: data/output/scaling/test.h5
 
 n_particles: 3
-n_train: 1000
+n_train: 10000
 n_val: 100
 n_test: 100
 t_end: 10.0

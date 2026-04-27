@@ -13,10 +13,30 @@ from torch.utils.data import Dataset
 class NBodyDataset(Dataset):
     """Load HDF5 trajectories as consecutive state pairs."""
 
-    def __init__(self, path: str) -> None:
-        """Load trajectories from HDF5 and create consecutive state pairs."""
+    def __init__(self, path: str, n_trajectories: int | None = None) -> None:
+        """Load trajectories from HDF5 and create consecutive state pairs.
+
+        Args:
+            path: HDF5 file path.
+            n_trajectories: if set, use only the first N trajectories. Used by
+                data-scaling experiments to slice nested subsets from a larger
+                generated file.
+        """
         with h5py.File(path, "r") as f:
             trajectories = f["trajectories"][:]
+
+        if n_trajectories is not None:
+            available = trajectories.shape[0]
+            if n_trajectories <= 0:
+                msg = f"n_trajectories must be positive, got {n_trajectories}"
+                raise ValueError(msg)
+            if n_trajectories > available:
+                msg = (
+                    f"requested {n_trajectories} trajectories from {path}, "
+                    f"but only {available} are available"
+                )
+                raise ValueError(msg)
+            trajectories = trajectories[:n_trajectories]
 
         self.n_trajectories, n_steps, n_particles, state_dim = trajectories.shape
         self.steps_per_traj = n_steps - 1

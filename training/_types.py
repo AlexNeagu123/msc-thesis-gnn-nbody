@@ -22,6 +22,7 @@ class DataConfig:
     train_path: str
     val_path: str
     dt: float
+    n_train_trajectories: int | None = None
 
 
 @dataclass

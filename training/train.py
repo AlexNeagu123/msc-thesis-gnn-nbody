@@ -10,7 +10,7 @@ References:
 import argparse
 import random
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -142,7 +142,7 @@ class Trainer:
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
         """Create data loaders and training-set normalization stats."""
         cfg = self.cfg
-        train_set = NBodyDataset(cfg.data.train_path)
+        train_set = NBodyDataset(cfg.data.train_path, cfg.data.n_train_trajectories)
         val_set = NBodyDataset(cfg.data.val_path)
 
         self.pos_std = float(train_set.inputs[..., :2].std())
@@ -400,8 +400,16 @@ if __name__ == "__main__":
         required=True,
         help="Path to model YAML config (e.g. configs/egnn.yaml).",
     )
+    parser.add_argument(
+        "--n-train",
+        type=int,
+        default=None,
+        help="Override n_train_trajectories from the config (data-scaling runs).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.n_train is not None:
+        config = replace(config, data=replace(config.data, n_train_trajectories=args.n_train))
     results = train(config)
     logger.info("results: %s", results)

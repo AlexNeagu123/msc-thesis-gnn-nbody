@@ -1,5 +1,6 @@
 .venv/
 data/output/*.h5
+data/output/**/*.h5
 __pycache__/
 *.pyc
 .pytest_cache/
