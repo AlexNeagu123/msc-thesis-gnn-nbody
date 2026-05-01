@@ -29,6 +29,7 @@ from evaluation.metrics import (
     compute_energy,
     compute_rollout_mse,
     compute_single_step_metrics,
+    run_all_rollouts,
 )
 from models.hgnn import HGNN
 from training._io import load_checkpoint, load_config
@@ -64,7 +65,7 @@ def evaluate_checkpoint(
     test_traj = read_states(test_path)
 
     sample_losses, min_distances = compute_single_step_metrics(model, str(test_path), torch_device)
-    predicted = compute_rollouts(model, test_traj, torch_device)
+    predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
 
     steps = _summary_steps(test_traj.shape[1] - 1)
@@ -93,29 +94,6 @@ def evaluate_checkpoint(
 
     logger.info("wrote evaluation report to %s", target_dir)
     return report
-
-
-def compute_rollouts(
-    model: nn.Module,
-    test_traj: np.ndarray,
-    device: torch.device,
-) -> np.ndarray:
-    """Run autoregressive rollouts for every test trajectory."""
-    n_steps = test_traj.shape[1] - 1
-    predictions = []
-
-    for traj in test_traj:
-        states = [torch.from_numpy(traj[0]).float()]
-        current = states[0].unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            for _ in range(n_steps):
-                current = model(current)
-                states.append(current.squeeze(0).cpu())
-
-        predictions.append(torch.stack(states).numpy())
-
-    return np.asarray(predictions)
 
 
 def _build_report(
