@@ -1,9 +1,13 @@
 """Typed contracts for evaluation reports.
 
+Top-level entry point is `EvaluationReport.from_dict()`. Inner dataclasses
+do not expose their own `from_dict` to match the pattern in
+`training/_types.py`: a single top-level constructor builds the whole tree.
+
 References:
     - JSON schema produced by evaluation/evaluate.py:_build_report
-    - Consumed by evaluation/scaling_report.py
-    - Pattern mirrors training/_types.py
+    - I/O wrapper: evaluation/_io.py
+    - Pattern mirror: training/_types.py
 """
 
 from dataclasses import dataclass
@@ -12,7 +16,7 @@ from typing import Any
 
 @dataclass
 class MseSummary:
-    """Summary produced by _summarize(percentiles=(95, 99))."""
+    """Summary statistics: mean/median/max plus p95, p99."""
 
     mean: float | None
     median: float | None
@@ -20,19 +24,8 @@ class MseSummary:
     p95: float | None
     p99: float | None
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "MseSummary":
-        """Build from the dict shape emitted by _summarize."""
-        return cls(
-            mean=d["mean"],
-            median=d["median"],
-            max=d["max"],
-            p95=d["p95"],
-            p99=d["p99"],
-        )
-
     def to_dict(self) -> dict[str, float | None]:
-        """Serialize preserving _summarize key order."""
+        """Serialize preserving JSON key order."""
         return {
             "mean": self.mean,
             "median": self.median,
@@ -44,7 +37,7 @@ class MseSummary:
 
 @dataclass
 class DistanceSummary:
-    """Summary produced by _summarize(percentiles=(5, 50))."""
+    """Summary statistics: mean/median/max plus p5, p50."""
 
     mean: float | None
     median: float | None
@@ -52,19 +45,8 @@ class DistanceSummary:
     p5: float | None
     p50: float | None
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DistanceSummary":
-        """Build from the dict shape emitted by _summarize."""
-        return cls(
-            mean=d["mean"],
-            median=d["median"],
-            max=d["max"],
-            p5=d["p5"],
-            p50=d["p50"],
-        )
-
     def to_dict(self) -> dict[str, float | None]:
-        """Serialize preserving _summarize key order."""
+        """Serialize preserving JSON key order."""
         return {
             "mean": self.mean,
             "median": self.median,
@@ -76,25 +58,15 @@ class DistanceSummary:
 
 @dataclass
 class DriftSummary:
-    """Summary produced by _summarize(percentiles=(95,))."""
+    """Summary statistics: mean/median/max plus p95."""
 
     mean: float | None
     median: float | None
     max: float | None
     p95: float | None
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DriftSummary":
-        """Build from the dict shape emitted by _summarize."""
-        return cls(
-            mean=d["mean"],
-            median=d["median"],
-            max=d["max"],
-            p95=d["p95"],
-        )
-
     def to_dict(self) -> dict[str, float | None]:
-        """Serialize preserving _summarize key order."""
+        """Serialize preserving JSON key order."""
         return {
             "mean": self.mean,
             "median": self.median,
@@ -122,27 +94,6 @@ class EvaluationMetadata:
     n_frames: int
     n_transitions: int
     n_particles: int
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "EvaluationMetadata":
-        """Build from the metadata block of an evaluation JSON."""
-        return cls(
-            model_name=d["model_name"],
-            checkpoint_path=d["checkpoint_path"],
-            config_path=d["config_path"],
-            test_path=d["test_path"],
-            device=d["device"],
-            checkpoint_epoch=d["checkpoint_epoch"],
-            checkpoint_val_loss=d["checkpoint_val_loss"],
-            run_id=d["run_id"],
-            git_commit=d.get("git_commit"),
-            pos_std=d["pos_std"],
-            vel_std=d["vel_std"],
-            n_trajectories=d["n_trajectories"],
-            n_frames=d["n_frames"],
-            n_transitions=d["n_transitions"],
-            n_particles=d["n_particles"],
-        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report key order."""
@@ -172,14 +123,6 @@ class SingleStepReport:
     mse: MseSummary
     min_pairwise_distance: DistanceSummary
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "SingleStepReport":
-        """Build from the single_step block."""
-        return cls(
-            mse=MseSummary.from_dict(d["mse"]),
-            min_pairwise_distance=DistanceSummary.from_dict(d["min_pairwise_distance"]),
-        )
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report key order."""
         return {
@@ -196,16 +139,6 @@ class RolloutStepMetrics:
     median_mse: float | None
     p95_mse: float | None
     finite_fraction: float | None
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "RolloutStepMetrics":
-        """Build from one entry of rollout.steps."""
-        return cls(
-            mean_finite_mse=d["mean_finite_mse"],
-            median_mse=d["median_mse"],
-            p95_mse=d["p95_mse"],
-            finite_fraction=d["finite_fraction"],
-        )
 
     def to_dict(self) -> dict[str, float | None]:
         """Serialize preserving _rollout_steps key order."""
@@ -227,17 +160,6 @@ class RolloutCurves:
     p95_mse: list[float | None]
     finite_fraction: list[float | None]
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "RolloutCurves":
-        """Build from rollout.curves."""
-        return cls(
-            step=list(d["step"]),
-            mean_finite_mse=list(d["mean_finite_mse"]),
-            median_mse=list(d["median_mse"]),
-            p95_mse=list(d["p95_mse"]),
-            finite_fraction=list(d["finite_fraction"]),
-        )
-
     def to_dict(self) -> dict[str, list[Any]]:
         """Serialize preserving _rollout_curves key order."""
         return {
@@ -255,14 +177,6 @@ class DivergenceMetrics:
 
     first_step: list[int | None]
     final_fraction_below: float | None
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DivergenceMetrics":
-        """Build from one entry of rollout.thresholds."""
-        return cls(
-            first_step=list(d["first_step"]),
-            final_fraction_below=d["final_fraction_below"],
-        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _divergence_report key order."""
@@ -287,18 +201,6 @@ class RolloutReport:
     finite_final_fraction: float | None
     curves: RolloutCurves | None = None
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "RolloutReport":
-        """Build from the rollout block, tolerating missing curves."""
-        curves_data = d.get("curves")
-        return cls(
-            steps={k: RolloutStepMetrics.from_dict(v) for k, v in d["steps"].items()},
-            first_nonfinite_step=list(d["first_nonfinite_step"]),
-            thresholds={k: DivergenceMetrics.from_dict(v) for k, v in d["thresholds"].items()},
-            finite_final_fraction=d["finite_final_fraction"],
-            curves=RolloutCurves.from_dict(curves_data) if curves_data is not None else None,
-        )
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report rollout key order."""
         # order: steps, curves (optional), first_nonfinite_step, thresholds, finite_final_fraction
@@ -322,16 +224,6 @@ class EnergyDriftReport:
     per_trajectory_final: list[float | None]
     per_trajectory_max: list[float | None]
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "EnergyDriftReport":
-        """Build from energy.physical or energy.learned_hamiltonian."""
-        return cls(
-            final_relative_drift=DriftSummary.from_dict(d["final_relative_drift"]),
-            max_relative_drift=DriftSummary.from_dict(d["max_relative_drift"]),
-            per_trajectory_final=list(d["per_trajectory_final"]),
-            per_trajectory_max=list(d["per_trajectory_max"]),
-        )
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _energy_drift_report key order."""
         return {
@@ -349,23 +241,22 @@ class EnergyReport:
     physical: EnergyDriftReport
     learned_hamiltonian: EnergyDriftReport | None = None
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "EnergyReport":
-        """Build from the energy block, tolerating missing learned_hamiltonian."""
-        learned = d.get("learned_hamiltonian")
-        return cls(
-            physical=EnergyDriftReport.from_dict(d["physical"]),
-            learned_hamiltonian=(
-                EnergyDriftReport.from_dict(learned) if learned is not None else None
-            ),
-        )
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize, omitting learned_hamiltonian when absent (matches EGNN reports)."""
         out: dict[str, Any] = {"physical": self.physical.to_dict()}
         if self.learned_hamiltonian is not None:
             out["learned_hamiltonian"] = self.learned_hamiltonian.to_dict()
         return out
+
+
+def _energy_drift_from_dict(d: dict[str, Any]) -> EnergyDriftReport:
+    """Construct an EnergyDriftReport from its JSON-shaped dict."""
+    return EnergyDriftReport(
+        final_relative_drift=DriftSummary(**d["final_relative_drift"]),
+        max_relative_drift=DriftSummary(**d["max_relative_drift"]),
+        per_trajectory_final=d["per_trajectory_final"],
+        per_trajectory_max=d["per_trajectory_max"],
+    )
 
 
 @dataclass
@@ -379,12 +270,31 @@ class EvaluationReport:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "EvaluationReport":
-        """Build from a parsed metrics.json dict."""
+        """Build a typed report from a parsed metrics.json dict."""
+        rollout = d["rollout"]
+        energy = d["energy"]
+        learned = energy.get("learned_hamiltonian")
+        curves = rollout.get("curves")
+
         return cls(
-            metadata=EvaluationMetadata.from_dict(d["metadata"]),
-            single_step=SingleStepReport.from_dict(d["single_step"]),
-            rollout=RolloutReport.from_dict(d["rollout"]),
-            energy=EnergyReport.from_dict(d["energy"]),
+            metadata=EvaluationMetadata(**d["metadata"]),
+            single_step=SingleStepReport(
+                mse=MseSummary(**d["single_step"]["mse"]),
+                min_pairwise_distance=DistanceSummary(**d["single_step"]["min_pairwise_distance"]),
+            ),
+            rollout=RolloutReport(
+                steps={k: RolloutStepMetrics(**v) for k, v in rollout["steps"].items()},
+                first_nonfinite_step=rollout["first_nonfinite_step"],
+                thresholds={k: DivergenceMetrics(**v) for k, v in rollout["thresholds"].items()},
+                finite_final_fraction=rollout["finite_final_fraction"],
+                curves=RolloutCurves(**curves) if curves is not None else None,
+            ),
+            energy=EnergyReport(
+                physical=_energy_drift_from_dict(energy["physical"]),
+                learned_hamiltonian=(
+                    _energy_drift_from_dict(learned) if learned is not None else None
+                ),
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -455,7 +365,9 @@ class SummaryRow:
         row["rollout_final_finite_fraction"] = rollout.finite_final_fraction
 
         for threshold, divergence in rollout.thresholds.items():
-            row[f"rollout_final_fraction_below_mse_{threshold}"] = divergence.final_fraction_below
+            row[f"rollout_final_fraction_below_mse_{threshold}"] = (
+                divergence.final_fraction_below
+            )
 
         if learned is not None:
             row["learned_h_final_drift_mean"] = learned.final_relative_drift.mean

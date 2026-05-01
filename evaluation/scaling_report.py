@@ -24,11 +24,11 @@ References:
 """
 
 import argparse
-import json
 from pathlib import Path
 
 import yaml
 
+from evaluation._io import read_evaluation_report
 from evaluation._types import EvaluationReport
 from utils import get_logger
 
@@ -52,8 +52,7 @@ def load_manifest(path: Path) -> dict[str, dict[int, EvaluationReport]]:
     for model, sizes in raw.items():
         out[model] = {}
         for size, metrics_path in sizes.items():
-            with Path(metrics_path).open() as f:
-                out[model][int(size)] = EvaluationReport.from_dict(json.load(f))
+            out[model][int(size)] = read_evaluation_report(Path(metrics_path))
     return out
 
 

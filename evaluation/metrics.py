@@ -185,9 +185,10 @@ def plot_trajectories(
         pred = predicted[idx]
         n_particles = true.shape[1]
 
-        for col, (data, title) in enumerate(
-            [(true, "ground truth"), (pred, f"{model_name} predicted")]
-        ):
+        for col, (data, title) in enumerate([
+            (true, "ground truth"),
+            (pred, f"{model_name} predicted"),
+        ]):
             ax = axes[row, col]
             for p in range(n_particles):
                 ax.plot(

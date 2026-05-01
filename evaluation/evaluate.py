@@ -1,8 +1,6 @@
 """Official numeric evaluation runner for trained checkpoints."""
 
 import argparse
-import csv
-import json
 from pathlib import Path
 
 import h5py
@@ -11,6 +9,7 @@ import torch
 from torch import nn
 
 from data.dataset import NBodyDataset
+from evaluation._io import write_evaluation_report, write_summary_csv
 from evaluation._types import (
     DistanceSummary,
     DivergenceMetrics,
@@ -24,7 +23,6 @@ from evaluation._types import (
     RolloutReport,
     RolloutStepMetrics,
     SingleStepReport,
-    SummaryRow,
 )
 from evaluation.metrics import (
     RolloutMSE,
@@ -90,8 +88,8 @@ def evaluate_checkpoint(
 
     target_dir = _output_dir(output_dir, cfg.model.name, checkpoint_path)
     target_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(target_dir / "metrics.json", report)
-    _write_summary_csv(target_dir / "summary.csv", SummaryRow.from_report(report).to_csv_row())
+    write_evaluation_report(target_dir / "metrics.json", report)
+    write_summary_csv(target_dir / "summary.csv", report)
 
     logger.info("wrote evaluation report to %s", target_dir)
     return report
@@ -458,37 +456,6 @@ def _optional_float(value: object | None) -> float | None:
     if value is None:
         return None
     return _float(value)
-
-
-def _write_summary_csv(path: Path, row: dict[str, object]) -> None:
-    """Write one flat summary row."""
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-        writer.writeheader()
-        writer.writerow(row)
-
-
-def _write_json(path: Path, report: EvaluationReport) -> None:
-    """Write a standards-compliant JSON report."""
-    with path.open("w") as f:
-        json.dump(_json_safe(report.to_dict()), f, indent=2, allow_nan=False)
-
-
-def _json_safe(value: object) -> object:
-    """Convert numpy values and non-finite floats to JSON-safe values."""
-    if isinstance(value, dict):
-        return {key: _json_safe(v) for key, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return _float(value)
-    if isinstance(value, float):
-        return _float(value)
-    return value
 
 
 def _output_dir(output_dir: str | Path | None, model_name: str, checkpoint_path: Path) -> Path:

@@ -8,13 +8,7 @@ soft guard: it loads if present, skips silently otherwise.
 import json
 from pathlib import Path
 
-from evaluation._types import (
-    DistanceSummary,
-    DriftSummary,
-    EvaluationReport,
-    MseSummary,
-    SummaryRow,
-)
+from evaluation._types import EvaluationReport, SummaryRow
 
 
 def _egnn_report_dict() -> dict:
@@ -121,30 +115,6 @@ def _legacy_report_dict() -> dict:
     base = _egnn_report_dict()
     del base["rollout"]["curves"]
     return base
-
-
-def test_mse_summary_round_trip() -> None:
-    """MseSummary preserves all fields."""
-    d = {"mean": 1.0, "median": 0.5, "max": 10.0, "p95": 8.0, "p99": 9.5}
-    assert MseSummary.from_dict(d).to_dict() == d
-
-
-def test_distance_summary_round_trip() -> None:
-    """DistanceSummary preserves all fields."""
-    d = {"mean": 1.0, "median": 0.5, "max": 10.0, "p5": 0.1, "p50": 0.5}
-    assert DistanceSummary.from_dict(d).to_dict() == d
-
-
-def test_drift_summary_round_trip() -> None:
-    """DriftSummary preserves all fields."""
-    d = {"mean": 1.0, "median": 0.5, "max": 10.0, "p95": 8.0}
-    assert DriftSummary.from_dict(d).to_dict() == d
-
-
-def test_summary_handles_none_values() -> None:
-    """Summaries with all-None values (no finite data) round-trip."""
-    d = {"mean": None, "median": None, "max": None, "p95": None, "p99": None}
-    assert MseSummary.from_dict(d).to_dict() == d
 
 
 def test_evaluation_report_round_trip_egnn() -> None:
