@@ -203,7 +203,12 @@ def _normalization_stats(
     cfg: TrainConfig,
     checkpoint: Checkpoint | dict[str, object],
 ) -> tuple[float, float]:
-    """Load normalization stats from train data, falling back to checkpoint metadata."""
+    """Load checkpoint normalization stats, falling back to train data."""
+    pos_std = _checkpoint_attr(checkpoint, "pos_std")
+    vel_std = _checkpoint_attr(checkpoint, "vel_std")
+    if pos_std is not None and vel_std is not None:
+        return float(pos_std), float(vel_std)
+
     train_path = Path(cfg.data.train_path)
     if train_path.exists():
         train_set = NBodyDataset(str(train_path))
@@ -212,13 +217,8 @@ def _normalization_stats(
             float(train_set.inputs[..., 2:4].std()),
         )
 
-    pos_std = _checkpoint_attr(checkpoint, "pos_std")
-    vel_std = _checkpoint_attr(checkpoint, "vel_std")
-    if pos_std is None or vel_std is None:
-        msg = f"Missing train data for normalization stats: {train_path}"
-        raise FileNotFoundError(msg)
-
-    return float(pos_std), float(vel_std)
+    msg = f"Missing checkpoint normalization stats and train data: {train_path}"
+    raise FileNotFoundError(msg)
 
 
 def _checkpoint_attr(checkpoint: Checkpoint | dict[str, object], name: str) -> object | None:

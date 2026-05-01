@@ -8,7 +8,12 @@ import h5py
 import numpy as np
 import torch
 
-from evaluation.evaluate import _checkpoint_attr, _output_dir, evaluate_checkpoint
+from evaluation.evaluate import (
+    _checkpoint_attr,
+    _normalization_stats,
+    _output_dir,
+    evaluate_checkpoint,
+)
 from models.egnn import EGNN
 from models.hgnn import HGNN
 from training._types import (
@@ -80,6 +85,26 @@ def test_checkpoint_attr_supports_dict_checkpoint() -> None:
 
     assert _checkpoint_attr(checkpoint, "epoch") == 7
     assert _checkpoint_attr(checkpoint, "missing") is None
+
+
+def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
+    """Evaluation should use the stats saved with the trained checkpoint."""
+    train_path = tmp_path / "train.h5"
+    val_path = tmp_path / "val.h5"
+    _write_h5(train_path)
+    _write_h5(val_path)
+
+    cfg = _cfg(train_path, val_path, "egnn")
+    checkpoint = Checkpoint(
+        epoch=1,
+        model={},
+        optimizer={},
+        val_loss=0.1,
+        pos_std=12.5,
+        vel_std=3.25,
+    )
+
+    assert _normalization_stats(cfg, checkpoint) == (12.5, 3.25)
 
 
 def test_default_output_dir_is_top_level_results() -> None:

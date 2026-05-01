@@ -8,6 +8,7 @@ __pycache__/
 .ipynb_checkpoints/
 checkpoints/
 logs/
+runs/
 evaluation/runs/
 results/evaluation/
 .DS_Store
