@@ -66,6 +66,7 @@ indent-style = "space"
 [tool.pytest.ini_options]
 testpaths = ["."]
 pythonpath = ["."]
+addopts = "--import-mode=importlib"
 
 [tool.pyright]
 include = ["."]

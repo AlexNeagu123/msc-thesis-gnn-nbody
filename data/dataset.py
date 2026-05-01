@@ -1,13 +1,16 @@
 """PyTorch Dataset wrapping the HDF5 trajectory files.
 
 References:
-    - HDF5 layout defined in data/generate.py
+    - HDF5 layout owned by data/_io.py
     - EGNN data loading pattern: https://github.com/vgsatorras/egnn
 """
 
-import h5py
+from pathlib import Path
+
 import torch
 from torch.utils.data import Dataset
+
+from data._io import read_trajectories
 
 
 class NBodyDataset(Dataset):
@@ -22,8 +25,7 @@ class NBodyDataset(Dataset):
                 data-scaling experiments to slice nested subsets from a larger
                 generated file.
         """
-        with h5py.File(path, "r") as f:
-            trajectories = f["trajectories"][:]
+        trajectories = read_trajectories(Path(path)).states
 
         if n_trajectories is not None:
             available = trajectories.shape[0]

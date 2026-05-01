@@ -31,8 +31,9 @@ from evaluation.metrics import (
     compute_single_step_metrics,
 )
 from models.hgnn import HGNN
+from training._io import load_checkpoint, load_config
 from training._types import Checkpoint, TrainConfig
-from training.train import build_model, load_config
+from training.train import build_model
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -56,7 +57,7 @@ def evaluate_checkpoint(
     test_path = Path(test_path)
 
     torch_device = _resolve_device(device)
-    checkpoint = _load_checkpoint(checkpoint_path, torch_device)
+    checkpoint = load_checkpoint(checkpoint_path, torch_device)
     pos_std, vel_std = _normalization_stats(cfg, checkpoint)
     model = _load_model(cfg, checkpoint, pos_std, vel_std, torch_device)
 
@@ -121,7 +122,7 @@ def compute_rollouts(
 def _build_report(
     *,
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
     checkpoint_path: Path,
     config_path: Path,
     test_path: Path,
@@ -146,10 +147,10 @@ def _build_report(
         config_path=str(config_path),
         test_path=str(test_path),
         device=str(device),
-        checkpoint_epoch=_checkpoint_attr(checkpoint, "epoch"),
-        checkpoint_val_loss=_checkpoint_attr(checkpoint, "val_loss"),
-        run_id=_checkpoint_attr(checkpoint, "run_id") or checkpoint_path.parent.name,
-        git_commit=_checkpoint_attr(checkpoint, "git_commit"),
+        checkpoint_epoch=checkpoint.epoch,
+        checkpoint_val_loss=checkpoint.val_loss,
+        run_id=checkpoint.run_id or checkpoint_path.parent.name,
+        git_commit=checkpoint.git_commit,
         pos_std=pos_std,
         vel_std=vel_std,
         n_trajectories=n_traj,
@@ -188,42 +189,27 @@ def _build_report(
     )
 
 
-def _load_checkpoint(path: Path, device: torch.device) -> Checkpoint | dict[str, object]:
-    """Load a checkpoint object or legacy dict checkpoint."""
-    loaded = torch.load(path, weights_only=False, map_location=device)
-    if isinstance(loaded, Checkpoint | dict):
-        return loaded
-    msg = f"Unsupported checkpoint type: {type(loaded).__name__}"
-    raise TypeError(msg)
-
-
 def _load_model(
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
     pos_std: float,
     vel_std: float,
     device: torch.device,
 ) -> nn.Module:
     """Build the configured model and load checkpoint weights."""
     model = build_model(cfg, pos_std=pos_std, vel_std=vel_std).to(device)
-    state = _checkpoint_attr(checkpoint, "model")
-    if not isinstance(state, dict):
-        msg = "Checkpoint is missing model state"
-        raise ValueError(msg)
-    model.load_state_dict(state)
+    model.load_state_dict(checkpoint.model)
     model.eval()
     return model
 
 
 def _normalization_stats(
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
 ) -> tuple[float, float]:
     """Load checkpoint normalization stats, falling back to train data."""
-    pos_std = _checkpoint_attr(checkpoint, "pos_std")
-    vel_std = _checkpoint_attr(checkpoint, "vel_std")
-    if pos_std is not None and vel_std is not None:
-        return float(pos_std), float(vel_std)
+    if checkpoint.pos_std is not None and checkpoint.vel_std is not None:
+        return checkpoint.pos_std, checkpoint.vel_std
 
     train_path = Path(cfg.data.train_path)
     if train_path.exists():
@@ -235,13 +221,6 @@ def _normalization_stats(
 
     msg = f"Missing checkpoint normalization stats and train data: {train_path}"
     raise FileNotFoundError(msg)
-
-
-def _checkpoint_attr(checkpoint: Checkpoint | dict[str, object], name: str) -> object | None:
-    """Read a field from current or legacy checkpoint formats."""
-    if isinstance(checkpoint, dict):
-        return checkpoint.get(name)
-    return getattr(checkpoint, name, None)
 
 
 def _summary_steps(n_steps: int) -> list[int]:

@@ -9,7 +9,6 @@ import numpy as np
 import torch
 
 from evaluation.evaluate import (
-    _checkpoint_attr,
     _normalization_stats,
     _output_dir,
     evaluate_checkpoint,
@@ -77,14 +76,6 @@ training:
   device: cpu
 """
     )
-
-
-def test_checkpoint_attr_supports_dict_checkpoint() -> None:
-    """Legacy dict checkpoints can be read."""
-    checkpoint = {"epoch": 7, "val_loss": 0.12}
-
-    assert _checkpoint_attr(checkpoint, "epoch") == 7
-    assert _checkpoint_attr(checkpoint, "missing") is None
 
 
 def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
