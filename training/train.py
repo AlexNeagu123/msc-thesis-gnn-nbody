@@ -16,7 +16,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
@@ -25,18 +24,21 @@ from tqdm import tqdm
 from data.dataset import NBodyDataset
 from models.egnn import EGNN
 from models.hgnn import HGNN
-from training._types import Checkpoint, TrainConfig, TrainResult
+from training._io import (
+    append_metrics,
+    init_metrics_csv,
+    load_config,
+    save_checkpoint,
+)
+from training._types import Checkpoint, EpochMetrics, TrainConfig, TrainResult
 from training.diagnostics import TrainingDiagnostics
 from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def load_config(path: str) -> TrainConfig:
-    """Load a YAML config file into a typed TrainConfig."""
-    with Path(path).open() as f:
-        raw = yaml.safe_load(f)
-    return TrainConfig.from_dict(raw)
+# re-exported so existing callers `from training.train import load_config` keep working
+__all__ = ["Trainer", "build_model", "load_config", "train"]
 
 
 def build_model(
@@ -228,7 +230,7 @@ class Trainer:
         log_dir = Path(self.cfg.logging.dir) / self.run_id
         log_dir.mkdir(parents=True, exist_ok=True)
         csv_path = log_dir / "metrics.csv"
-        csv_path.write_text("epoch,train_loss,val_loss,lr\n")
+        init_metrics_csv(csv_path)
         return csv_path
 
     def apply_noise(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -313,9 +315,9 @@ class Trainer:
             vel_std=self.vel_std,
             git_commit=self._git_commit(),
         )
-        torch.save(ckpt, self.ckpt_dir / "latest.pt")
+        save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
         if is_best:
-            torch.save(ckpt, self.ckpt_dir / "best.pt")
+            save_checkpoint(self.ckpt_dir / "best.pt", ckpt)
 
     def _log_epoch(
         self,
@@ -326,8 +328,10 @@ class Trainer:
     ) -> None:
         """Write epoch metrics to CSV and console."""
         if self.csv_path is not None:
-            with self.csv_path.open("a") as f:
-                f.write(f"{epoch},{train_loss:.6f},{val_loss:.6f},{lr:.2e}\n")
+            append_metrics(
+                self.csv_path,
+                EpochMetrics(epoch=epoch, train_loss=train_loss, val_loss=val_loss, lr=lr),
+            )
 
         logger.info(
             "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",

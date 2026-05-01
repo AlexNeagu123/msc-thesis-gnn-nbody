@@ -12,12 +12,11 @@ References:
 import argparse
 from pathlib import Path
 
-import h5py
 import numpy as np
 import rebound
-import yaml
 
-from data._types import DataGenConfig, SimulationParams
+from data._io import load_data_config, write_trajectories
+from data._types import DataGenConfig, SimulationParams, Trajectories, TrajectoryMetadata
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -186,30 +185,31 @@ class Generator:
         attempted: int,
     ) -> None:
         """Save trajectories and metadata to HDF5."""
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-
         params = self.params
-        with h5py.File(output, "w") as f:
-            f.create_dataset("trajectories", data=states)
-            f.create_dataset("energies", data=energies)
+        rejection_rate = 1 - n_trajectories / attempted
 
-            meta = f.create_group("metadata")
-            meta.attrs["n_trajectories"] = n_trajectories
-            meta.attrs["n_particles"] = params.n_particles
-            meta.attrs["n_steps"] = states.shape[1]
-            meta.attrs["t_end"] = params.t_end
-            meta.attrs["dt"] = params.dt
-            meta.attrs["G"] = params.G
-            meta.attrs["mass"] = params.mass
-            meta.attrs["min_distance"] = params.min_distance
-            meta.attrs["pos_scale"] = params.pos_scale
-            meta.attrs["vel_scale"] = params.vel_scale
-            meta.attrs["seed"] = seed
-            meta.attrs["rejection_rate"] = 1 - n_trajectories / attempted
+        metadata = TrajectoryMetadata(
+            n_trajectories=n_trajectories,
+            n_particles=params.n_particles,
+            n_steps=states.shape[1],
+            t_end=params.t_end,
+            dt=params.dt,
+            G=params.G,
+            mass=params.mass,
+            min_distance=params.min_distance,
+            pos_scale=params.pos_scale,
+            vel_scale=params.vel_scale,
+            seed=seed,
+            rejection_rate=rejection_rate,
+        )
+
+        write_trajectories(
+            Path(output_path),
+            Trajectories(states=states, energies=energies, metadata=metadata),
+        )
 
         logger.info("saved %d trajectories to %s", n_trajectories, output_path)
-        logger.info("rejection rate: %.1f%%", (1 - n_trajectories / attempted) * 100)
+        logger.info("rejection rate: %.1f%%", rejection_rate * 100)
 
 
 def generate_trajectory(
@@ -229,8 +229,5 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="configs/data.yaml")
     args = parser.parse_args()
 
-    with Path(args.config).open() as f:
-        raw = yaml.safe_load(f)
-
-    config = DataGenConfig.from_dict(raw)
+    config = load_data_config(args.config)
     Generator(config).run()

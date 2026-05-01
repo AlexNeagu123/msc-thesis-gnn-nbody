@@ -1,25 +1,40 @@
 """Official numeric evaluation runner for trained checkpoints."""
 
 import argparse
-import csv
-import json
 from pathlib import Path
 
-import h5py
 import numpy as np
 import torch
 from torch import nn
 
+from data._io import read_states
 from data.dataset import NBodyDataset
-from evaluation.metrics import (
+from evaluation._io import write_evaluation_report, write_summary_csv
+from evaluation._types import (
+    DistanceSummary,
+    DivergenceMetrics,
+    DriftSummary,
+    EnergyDriftReport,
+    EnergyReport,
+    EvaluationMetadata,
+    EvaluationReport,
+    MseSummary,
+    RolloutCurves,
     RolloutMSE,
+    RolloutReport,
+    RolloutStepMetrics,
+    SingleStepReport,
+)
+from evaluation.metrics import (
     compute_energy,
     compute_rollout_mse,
     compute_single_step_metrics,
+    run_all_rollouts,
 )
 from models.hgnn import HGNN
+from training._io import load_checkpoint, load_config
 from training._types import Checkpoint, TrainConfig
-from training.train import build_model, load_config
+from training.train import build_model
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -36,22 +51,21 @@ def evaluate_checkpoint(
     test_path: str | Path = DEFAULT_TEST_PATH,
     output_dir: str | Path | None = None,
     device: str = "auto",
-) -> dict[str, object]:
+) -> EvaluationReport:
     """Evaluate one checkpoint and write JSON/CSV artifacts."""
     checkpoint_path = Path(checkpoint_path)
     config_path = Path(config_path)
     test_path = Path(test_path)
 
     torch_device = _resolve_device(device)
-    checkpoint = _load_checkpoint(checkpoint_path, torch_device)
+    checkpoint = load_checkpoint(checkpoint_path, torch_device)
     pos_std, vel_std = _normalization_stats(cfg, checkpoint)
     model = _load_model(cfg, checkpoint, pos_std, vel_std, torch_device)
 
-    with h5py.File(test_path, "r") as f:
-        test_traj = f["trajectories"][:]
+    test_traj = read_states(test_path)
 
     sample_losses, min_distances = compute_single_step_metrics(model, str(test_path), torch_device)
-    predicted = compute_rollouts(model, test_traj, torch_device)
+    predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
 
     steps = _summary_steps(test_traj.shape[1] - 1)
@@ -75,40 +89,17 @@ def evaluate_checkpoint(
 
     target_dir = _output_dir(output_dir, cfg.model.name, checkpoint_path)
     target_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(target_dir / "metrics.json", report)
-    _write_summary_csv(target_dir / "summary.csv", _summary_row(report))
+    write_evaluation_report(target_dir / "metrics.json", report)
+    write_summary_csv(target_dir / "summary.csv", report)
 
     logger.info("wrote evaluation report to %s", target_dir)
     return report
 
 
-def compute_rollouts(
-    model: nn.Module,
-    test_traj: np.ndarray,
-    device: torch.device,
-) -> np.ndarray:
-    """Run autoregressive rollouts for every test trajectory."""
-    n_steps = test_traj.shape[1] - 1
-    predictions = []
-
-    for traj in test_traj:
-        states = [torch.from_numpy(traj[0]).float()]
-        current = states[0].unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            for _ in range(n_steps):
-                current = model(current)
-                states.append(current.squeeze(0).cpu())
-
-        predictions.append(torch.stack(states).numpy())
-
-    return np.asarray(predictions)
-
-
 def _build_report(
     *,
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
     checkpoint_path: Path,
     config_path: Path,
     test_path: Path,
@@ -122,92 +113,80 @@ def _build_report(
     rollout_mse: RolloutMSE,
     steps: list[int],
     model: nn.Module,
-) -> dict[str, object]:
-    """Build the full JSON report."""
+) -> EvaluationReport:
+    """Build the typed evaluation report."""
     n_traj, n_frames, n_particles, _state_dim = test_traj.shape
     n_transitions = n_frames - 1
-    first_nonfinite = _first_nonfinite_steps(rollout_mse.per_trajectory)
-    physical_energy = _energy_drift_report(predicted)
-    divergence = _divergence_report(rollout_mse.per_trajectory, DIVERGENCE_THRESHOLDS)
 
-    report = {
-        "metadata": {
-            "model_name": cfg.model.name,
-            "checkpoint_path": str(checkpoint_path),
-            "config_path": str(config_path),
-            "test_path": str(test_path),
-            "device": str(device),
-            "checkpoint_epoch": _checkpoint_attr(checkpoint, "epoch"),
-            "checkpoint_val_loss": _checkpoint_attr(checkpoint, "val_loss"),
-            "run_id": _checkpoint_attr(checkpoint, "run_id") or checkpoint_path.parent.name,
-            "git_commit": _checkpoint_attr(checkpoint, "git_commit"),
-            "pos_std": pos_std,
-            "vel_std": vel_std,
-            "n_trajectories": n_traj,
-            "n_frames": n_frames,
-            "n_transitions": n_transitions,
-            "n_particles": n_particles,
-        },
-        "single_step": {
-            "mse": _summarize(sample_losses, percentiles=(95, 99)),
-            "min_pairwise_distance": _summarize(min_distances, percentiles=(5, 50)),
-        },
-        "rollout": {
-            "steps": _rollout_steps(rollout_mse, steps),
-            "curves": _rollout_curves(rollout_mse),
-            "first_nonfinite_step": first_nonfinite,
-            "thresholds": divergence,
-            "finite_final_fraction": _float(rollout_mse.finite_fraction[-1]),
-        },
-        "energy": {
-            "physical": physical_energy,
-        },
-    }
+    metadata = EvaluationMetadata(
+        model_name=cfg.model.name,
+        checkpoint_path=str(checkpoint_path),
+        config_path=str(config_path),
+        test_path=str(test_path),
+        device=str(device),
+        checkpoint_epoch=checkpoint.epoch,
+        checkpoint_val_loss=checkpoint.val_loss,
+        run_id=checkpoint.run_id or checkpoint_path.parent.name,
+        git_commit=checkpoint.git_commit,
+        pos_std=pos_std,
+        vel_std=vel_std,
+        n_trajectories=n_traj,
+        n_frames=n_frames,
+        n_transitions=n_transitions,
+        n_particles=n_particles,
+    )
 
-    if isinstance(model, HGNN):
-        report["energy"]["learned_hamiltonian"] = _learned_hamiltonian_drift(
-            model, predicted, device
-        )
+    single_step = SingleStepReport(
+        mse=_summarize_mse(sample_losses),
+        min_pairwise_distance=_summarize_distance(min_distances),
+    )
 
-    return report
+    rollout = RolloutReport(
+        steps=_rollout_steps(rollout_mse, steps),
+        curves=_rollout_curves(rollout_mse),
+        first_nonfinite_step=_first_nonfinite_steps(rollout_mse.per_trajectory),
+        thresholds=_divergence_report(rollout_mse.per_trajectory, DIVERGENCE_THRESHOLDS),
+        finite_final_fraction=_float(rollout_mse.finite_fraction[-1]),
+    )
 
+    energy = EnergyReport(
+        physical=_energy_drift_report(predicted),
+        learned_hamiltonian=(
+            _learned_hamiltonian_drift(model, predicted, device)
+            if isinstance(model, HGNN)
+            else None
+        ),
+    )
 
-def _load_checkpoint(path: Path, device: torch.device) -> Checkpoint | dict[str, object]:
-    """Load a checkpoint object or legacy dict checkpoint."""
-    loaded = torch.load(path, weights_only=False, map_location=device)
-    if isinstance(loaded, Checkpoint | dict):
-        return loaded
-    msg = f"Unsupported checkpoint type: {type(loaded).__name__}"
-    raise TypeError(msg)
+    return EvaluationReport(
+        metadata=metadata,
+        single_step=single_step,
+        rollout=rollout,
+        energy=energy,
+    )
 
 
 def _load_model(
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
     pos_std: float,
     vel_std: float,
     device: torch.device,
 ) -> nn.Module:
     """Build the configured model and load checkpoint weights."""
     model = build_model(cfg, pos_std=pos_std, vel_std=vel_std).to(device)
-    state = _checkpoint_attr(checkpoint, "model")
-    if not isinstance(state, dict):
-        msg = "Checkpoint is missing model state"
-        raise ValueError(msg)
-    model.load_state_dict(state)
+    model.load_state_dict(checkpoint.model)
     model.eval()
     return model
 
 
 def _normalization_stats(
     cfg: TrainConfig,
-    checkpoint: Checkpoint | dict[str, object],
+    checkpoint: Checkpoint,
 ) -> tuple[float, float]:
     """Load checkpoint normalization stats, falling back to train data."""
-    pos_std = _checkpoint_attr(checkpoint, "pos_std")
-    vel_std = _checkpoint_attr(checkpoint, "vel_std")
-    if pos_std is not None and vel_std is not None:
-        return float(pos_std), float(vel_std)
+    if checkpoint.pos_std is not None and checkpoint.vel_std is not None:
+        return checkpoint.pos_std, checkpoint.vel_std
 
     train_path = Path(cfg.data.train_path)
     if train_path.exists():
@@ -221,13 +200,6 @@ def _normalization_stats(
     raise FileNotFoundError(msg)
 
 
-def _checkpoint_attr(checkpoint: Checkpoint | dict[str, object], name: str) -> object | None:
-    """Read a field from current or legacy checkpoint formats."""
-    if isinstance(checkpoint, dict):
-        return checkpoint.get(name)
-    return getattr(checkpoint, name, None)
-
-
 def _summary_steps(n_steps: int) -> list[int]:
     """Return standard rollout summary steps within trajectory bounds."""
     candidates = [1, 10, 50, 100, n_steps]
@@ -237,34 +209,34 @@ def _summary_steps(n_steps: int) -> list[int]:
 def _rollout_steps(
     rollout_mse: RolloutMSE,
     steps: list[int],
-) -> dict[str, dict[str, float | None]]:
+) -> dict[str, RolloutStepMetrics]:
     """Summarize rollout MSE at selected steps."""
     return {
-        str(step): {
-            "mean_finite_mse": _float(rollout_mse.mean[step]),
-            "median_mse": _float(rollout_mse.median[step]),
-            "p95_mse": _optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95)),
-            "finite_fraction": _float(rollout_mse.finite_fraction[step]),
-        }
+        str(step): RolloutStepMetrics(
+            mean_finite_mse=_float(rollout_mse.mean[step]),
+            median_mse=_float(rollout_mse.median[step]),
+            p95_mse=_optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95)),
+            finite_fraction=_float(rollout_mse.finite_fraction[step]),
+        )
         for step in steps
     }
 
 
-def _rollout_curves(rollout_mse: RolloutMSE) -> dict[str, list[int | float | None]]:
+def _rollout_curves(rollout_mse: RolloutMSE) -> RolloutCurves:
     """Return full per-step rollout curves for crossover analysis."""
     n_steps = len(rollout_mse.mean)
     steps = list(range(n_steps))
 
-    return {
-        "step": steps,
-        "mean_finite_mse": [_float(value) for value in rollout_mse.mean],
-        "median_mse": [_float(value) for value in rollout_mse.median],
-        "p95_mse": [
+    return RolloutCurves(
+        step=steps,
+        mean_finite_mse=[_float(value) for value in rollout_mse.mean],
+        median_mse=[_float(value) for value in rollout_mse.median],
+        p95_mse=[
             _optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95))
             for step in steps
         ],
-        "finite_fraction": [_float(value) for value in rollout_mse.finite_fraction],
-    }
+        finite_fraction=[_float(value) for value in rollout_mse.finite_fraction],
+    )
 
 
 def _first_nonfinite_steps(per_trajectory: np.ndarray) -> list[int | None]:
@@ -282,13 +254,13 @@ def _first_nonfinite_steps(per_trajectory: np.ndarray) -> list[int | None]:
 def _divergence_report(
     per_trajectory: np.ndarray,
     thresholds: list[float],
-) -> dict[str, dict[str, object]]:
+) -> dict[str, DivergenceMetrics]:
     """Summarize rollout divergence by MSE threshold."""
     return {
-        _threshold_key(threshold): {
-            "first_step": _first_threshold_steps(per_trajectory, threshold),
-            "final_fraction_below": _fraction_below_at_final(per_trajectory, threshold),
-        }
+        _threshold_key(threshold): DivergenceMetrics(
+            first_step=_first_threshold_steps(per_trajectory, threshold),
+            final_fraction_below=_fraction_below_at_final(per_trajectory, threshold),
+        )
         for threshold in thresholds
     }
 
@@ -310,7 +282,7 @@ def _fraction_below_at_final(per_trajectory: np.ndarray, threshold: float) -> fl
     return _float(np.mean(np.isfinite(final) & (final < threshold)))
 
 
-def _energy_drift_report(trajectories: np.ndarray) -> dict[str, object]:
+def _energy_drift_report(trajectories: np.ndarray) -> EnergyDriftReport:
     """Summarize relative drift in the known physical energy."""
     final_drifts = []
     max_drifts = []
@@ -321,19 +293,19 @@ def _energy_drift_report(trajectories: np.ndarray) -> dict[str, object]:
         final_drifts.append(drift[-1])
         max_drifts.append(_nanmax(drift))
 
-    return {
-        "final_relative_drift": _summarize(np.asarray(final_drifts), percentiles=(95,)),
-        "max_relative_drift": _summarize(np.asarray(max_drifts), percentiles=(95,)),
-        "per_trajectory_final": final_drifts,
-        "per_trajectory_max": max_drifts,
-    }
+    return EnergyDriftReport(
+        final_relative_drift=_summarize_drift(np.asarray(final_drifts)),
+        max_relative_drift=_summarize_drift(np.asarray(max_drifts)),
+        per_trajectory_final=final_drifts,
+        per_trajectory_max=max_drifts,
+    )
 
 
 def _learned_hamiltonian_drift(
     model: HGNN,
     trajectories: np.ndarray,
     device: torch.device,
-) -> dict[str, object]:
+) -> EnergyDriftReport:
     """Summarize drift in the learned Hamiltonian."""
     final_drifts = []
     max_drifts = []
@@ -349,12 +321,12 @@ def _learned_hamiltonian_drift(
             final_drifts.append(drift[-1])
             max_drifts.append(_nanmax(drift))
 
-    return {
-        "final_relative_drift": _summarize(np.asarray(final_drifts), percentiles=(95,)),
-        "max_relative_drift": _summarize(np.asarray(max_drifts), percentiles=(95,)),
-        "per_trajectory_final": final_drifts,
-        "per_trajectory_max": max_drifts,
-    }
+    return EnergyDriftReport(
+        final_relative_drift=_summarize_drift(np.asarray(final_drifts)),
+        max_relative_drift=_summarize_drift(np.asarray(max_drifts)),
+        per_trajectory_final=final_drifts,
+        per_trajectory_max=max_drifts,
+    )
 
 
 def _relative_drift(values: np.ndarray) -> np.ndarray:
@@ -363,23 +335,45 @@ def _relative_drift(values: np.ndarray) -> np.ndarray:
         return np.abs((values - values[0]) / values[0])
 
 
-def _summarize(values: np.ndarray, *, percentiles: tuple[int, ...]) -> dict[str, float | None]:
-    """Summarize finite values only."""
+def _summarize_mse(values: np.ndarray) -> MseSummary:
+    """Summarize single-step MSE values (mean/median/max + p95, p99)."""
     finite = values[np.isfinite(values)]
     if len(finite) == 0:
-        summary = {"mean": None, "median": None, "max": None}
-        for p in percentiles:
-            summary[f"p{p}"] = None
-        return summary
+        return MseSummary(mean=None, median=None, max=None, p95=None, p99=None)
+    return MseSummary(
+        mean=_float(np.mean(finite)),
+        median=_float(np.median(finite)),
+        max=_float(np.max(finite)),
+        p95=_float(np.percentile(finite, 95)),
+        p99=_float(np.percentile(finite, 99)),
+    )
 
-    summary = {
-        "mean": _float(np.mean(finite)),
-        "median": _float(np.median(finite)),
-        "max": _float(np.max(finite)),
-    }
-    for p in percentiles:
-        summary[f"p{p}"] = _float(np.percentile(finite, p))
-    return summary
+
+def _summarize_distance(values: np.ndarray) -> DistanceSummary:
+    """Summarize minimum pairwise distance values (mean/median/max + p5, p50)."""
+    finite = values[np.isfinite(values)]
+    if len(finite) == 0:
+        return DistanceSummary(mean=None, median=None, max=None, p5=None, p50=None)
+    return DistanceSummary(
+        mean=_float(np.mean(finite)),
+        median=_float(np.median(finite)),
+        max=_float(np.max(finite)),
+        p5=_float(np.percentile(finite, 5)),
+        p50=_float(np.percentile(finite, 50)),
+    )
+
+
+def _summarize_drift(values: np.ndarray) -> DriftSummary:
+    """Summarize energy drift values (mean/median/max + p95)."""
+    finite = values[np.isfinite(values)]
+    if len(finite) == 0:
+        return DriftSummary(mean=None, median=None, max=None, p95=None)
+    return DriftSummary(
+        mean=_float(np.mean(finite)),
+        median=_float(np.median(finite)),
+        max=_float(np.max(finite)),
+        p95=_float(np.percentile(finite, 95)),
+    )
 
 
 def _finite_percentile(values: np.ndarray, percentile: int) -> float | None:
@@ -418,92 +412,6 @@ def _optional_float(value: object | None) -> float | None:
     if value is None:
         return None
     return _float(value)
-
-
-def _summary_row(report: dict[str, object]) -> dict[str, object]:
-    """Flatten the report into one CSV row."""
-    metadata = report["metadata"]
-    single = report["single_step"]["mse"]
-    physical_energy = report["energy"]["physical"]
-    learned = report["energy"].get("learned_hamiltonian")
-
-    row = {
-        "model_name": metadata["model_name"],
-        "run_id": metadata["run_id"],
-        "checkpoint_epoch": metadata["checkpoint_epoch"],
-        "checkpoint_val_loss": metadata["checkpoint_val_loss"],
-        "n_trajectories": metadata["n_trajectories"],
-        "n_frames": metadata["n_frames"],
-        "n_transitions": metadata["n_transitions"],
-        "n_particles": metadata["n_particles"],
-        "single_step_mse_mean": single["mean"],
-        "single_step_mse_median": single["median"],
-        "single_step_mse_p95": single["p95"],
-        "single_step_mse_p99": single["p99"],
-        "single_step_mse_max": single["max"],
-        "physical_energy_final_drift_mean": physical_energy["final_relative_drift"]["mean"],
-        "physical_energy_final_drift_median": physical_energy["final_relative_drift"]["median"],
-        "physical_energy_final_drift_p95": physical_energy["final_relative_drift"]["p95"],
-        "physical_energy_final_drift_max": physical_energy["final_relative_drift"]["max"],
-        "physical_energy_max_drift_mean": physical_energy["max_relative_drift"]["mean"],
-        "physical_energy_max_drift_median": physical_energy["max_relative_drift"]["median"],
-        "physical_energy_max_drift_p95": physical_energy["max_relative_drift"]["p95"],
-        "physical_energy_max_drift_max": physical_energy["max_relative_drift"]["max"],
-    }
-
-    for step, metrics in report["rollout"]["steps"].items():
-        row[f"rollout_step_{step}_mean_finite_mse"] = metrics["mean_finite_mse"]
-        row[f"rollout_step_{step}_median_mse"] = metrics["median_mse"]
-        row[f"rollout_step_{step}_p95_mse"] = metrics["p95_mse"]
-        row[f"rollout_step_{step}_finite_fraction"] = metrics["finite_fraction"]
-
-    row["rollout_final_finite_fraction"] = report["rollout"]["finite_final_fraction"]
-
-    for threshold, metrics in report["rollout"]["thresholds"].items():
-        row[f"rollout_final_fraction_below_mse_{threshold}"] = metrics["final_fraction_below"]
-
-    if learned is not None:
-        row["learned_h_final_drift_mean"] = learned["final_relative_drift"]["mean"]
-        row["learned_h_final_drift_median"] = learned["final_relative_drift"]["median"]
-        row["learned_h_final_drift_p95"] = learned["final_relative_drift"]["p95"]
-        row["learned_h_final_drift_max"] = learned["final_relative_drift"]["max"]
-        row["learned_h_max_drift_mean"] = learned["max_relative_drift"]["mean"]
-        row["learned_h_max_drift_median"] = learned["max_relative_drift"]["median"]
-        row["learned_h_max_drift_p95"] = learned["max_relative_drift"]["p95"]
-        row["learned_h_max_drift_max"] = learned["max_relative_drift"]["max"]
-
-    return row
-
-
-def _write_summary_csv(path: Path, row: dict[str, object]) -> None:
-    """Write one flat summary row."""
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-        writer.writeheader()
-        writer.writerow(row)
-
-
-def _write_json(path: Path, report: dict[str, object]) -> None:
-    """Write a standards-compliant JSON report."""
-    with path.open("w") as f:
-        json.dump(_json_safe(report), f, indent=2, allow_nan=False)
-
-
-def _json_safe(value: object) -> object:
-    """Convert numpy values and non-finite floats to JSON-safe values."""
-    if isinstance(value, dict):
-        return {key: _json_safe(v) for key, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return _float(value)
-    if isinstance(value, float):
-        return _float(value)
-    return value
 
 
 def _output_dir(output_dir: str | Path | None, model_name: str, checkpoint_path: Path) -> Path:

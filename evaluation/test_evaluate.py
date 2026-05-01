@@ -9,7 +9,6 @@ import numpy as np
 import torch
 
 from evaluation.evaluate import (
-    _checkpoint_attr,
     _normalization_stats,
     _output_dir,
     evaluate_checkpoint,
@@ -79,14 +78,6 @@ training:
     )
 
 
-def test_checkpoint_attr_supports_dict_checkpoint() -> None:
-    """Legacy dict checkpoints can be read."""
-    checkpoint = {"epoch": 7, "val_loss": 0.12}
-
-    assert _checkpoint_attr(checkpoint, "epoch") == 7
-    assert _checkpoint_attr(checkpoint, "missing") is None
-
-
 def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
     """Evaluation should use the stats saved with the trained checkpoint."""
     train_path = tmp_path / "train.h5"
@@ -151,9 +142,8 @@ def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
 
     assert (output_dir / "metrics.json").exists()
     assert (output_dir / "summary.csv").exists()
-    assert report["metadata"]["model_name"] == "egnn"
-    assert "learned_hamiltonian" not in report["energy"]
-    assert "physical" in report["energy"]
+    assert report.metadata.model_name == "egnn"
+    assert report.energy.learned_hamiltonian is None
 
     data = json.loads((output_dir / "metrics.json").read_text())
     assert data["metadata"]["checkpoint_epoch"] == 1
@@ -217,4 +207,4 @@ def test_evaluate_hgnn_reports_learned_hamiltonian(tmp_path: Path) -> None:
         device="cpu",
     )
 
-    assert "learned_hamiltonian" in report["energy"]
+    assert report.energy.learned_hamiltonian is not None

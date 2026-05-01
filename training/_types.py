@@ -114,3 +114,22 @@ class TrainResult:
     best_epoch: int
     train_history: list[float] = field(default_factory=list)
     val_history: list[float] = field(default_factory=list)
+
+
+@dataclass
+class EpochMetrics:
+    """One row of the training metrics CSV."""
+
+    epoch: int
+    train_loss: float
+    val_loss: float
+    lr: float
+
+    @classmethod
+    def csv_header(cls) -> str:
+        """Return the CSV header line (no trailing newline)."""
+        return "epoch,train_loss,val_loss,lr"
+
+    def to_csv_row(self) -> str:
+        """Return one CSV row matching csv_header column order."""
+        return f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e}"

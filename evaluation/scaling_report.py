@@ -20,15 +20,16 @@ Manifest format::
 
 References:
     - Methodology: edu/data-scaling-methodology.md
-    - metrics.json schema: evaluation/evaluate.py (_build_report)
+    - metrics.json schema: evaluation/_types.py (EvaluationReport)
 """
 
 import argparse
-import json
 from pathlib import Path
 
 import yaml
 
+from evaluation._io import read_evaluation_report
+from evaluation._types import EvaluationReport
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -44,19 +45,18 @@ def _fmt(value: float | None, *, sci: bool = False) -> str:
     return f"{value:.3e}" if sci else f"{value:.4f}"
 
 
-def load_manifest(path: Path) -> dict[str, dict[int, dict]]:
-    """Load manifest YAML and read each metrics.json into a nested dict."""
+def load_manifest(path: Path) -> dict[str, dict[int, EvaluationReport]]:
+    """Load manifest YAML and parse each metrics.json into a typed report."""
     raw = yaml.safe_load(path.read_text())
-    out: dict[str, dict[int, dict]] = {}
+    out: dict[str, dict[int, EvaluationReport]] = {}
     for model, sizes in raw.items():
         out[model] = {}
         for size, metrics_path in sizes.items():
-            with Path(metrics_path).open() as f:
-                out[model][int(size)] = json.load(f)
+            out[model][int(size)] = read_evaluation_report(Path(metrics_path))
     return out
 
 
-def _collect_sizes(reports: dict[str, dict[int, dict]]) -> list[int]:
+def _collect_sizes(reports: dict[str, dict[int, EvaluationReport]]) -> list[int]:
     """Sorted union of all dataset sizes referenced in the manifest."""
     sizes: set[int] = set()
     for sizes_for_model in reports.values():
@@ -64,7 +64,7 @@ def _collect_sizes(reports: dict[str, dict[int, dict]]) -> list[int]:
     return sorted(sizes)
 
 
-def table_local_accuracy(reports: dict[str, dict[int, dict]]) -> str:
+def table_local_accuracy(reports: dict[str, dict[int, EvaluationReport]]) -> str:
     """Table 1: val loss + single-step MSE per (size, model)."""
     lines = [
         "## Table 1: Local accuracy vs dataset size",
@@ -77,17 +77,16 @@ def table_local_accuracy(reports: dict[str, dict[int, dict]]) -> str:
             r = reports[model].get(size)
             if r is None:
                 continue
-            val_loss = r["metadata"].get("checkpoint_val_loss")
-            single = r["single_step"]["mse"]
+            single = r.single_step.mse
             lines.append(
-                f"| {size} | {model} | {_fmt(val_loss)} | "
-                f"{_fmt(single['median'], sci=True)} | "
-                f"{_fmt(single.get('p95'), sci=True)} |"
+                f"| {size} | {model} | {_fmt(r.metadata.checkpoint_val_loss)} | "
+                f"{_fmt(single.median, sci=True)} | "
+                f"{_fmt(single.p95, sci=True)} |"
             )
     return "\n".join(lines)
 
 
-def table_rollout_stability(reports: dict[str, dict[int, dict]]) -> str:
+def table_rollout_stability(reports: dict[str, dict[int, EvaluationReport]]) -> str:
     """Table 2: rollout median MSE at fixed steps + final finite fraction."""
     headers = (
         "| Size | Model |"
@@ -101,11 +100,11 @@ def table_rollout_stability(reports: dict[str, dict[int, dict]]) -> str:
             r = reports[model].get(size)
             if r is None:
                 continue
-            steps = r["rollout"]["steps"]
-            cells = [_fmt(steps[str(s)]["median_mse"], sci=True) for s in ROLLOUT_STEPS]
-            final_finite = r["rollout"]["finite_final_fraction"]
+            cells = [_fmt(r.rollout.steps[str(s)].median_mse, sci=True) for s in ROLLOUT_STEPS]
             lines.append(
-                f"| {size} | {model} | " + " | ".join(cells) + f" | {_fmt(final_finite)} |"
+                f"| {size} | {model} | "
+                + " | ".join(cells)
+                + f" | {_fmt(r.rollout.finite_final_fraction)} |"
             )
     return "\n".join(lines)
 
@@ -122,7 +121,7 @@ def _crossover_step(egnn_curve: list[float | None], hgnn_curve: list[float | Non
     return None
 
 
-def table_crossover(reports: dict[str, dict[int, dict]]) -> str:
+def table_crossover(reports: dict[str, dict[int, EvaluationReport]]) -> str:
     """Table 3: crossover steps (HGNN beats EGNN) and EGNN divergence."""
     lines = [
         "## Table 3: Crossover and divergence",
@@ -135,41 +134,36 @@ def table_crossover(reports: dict[str, dict[int, dict]]) -> str:
         hgnn_r = reports.get("hgnn", {}).get(size)
         if egnn_r is None or hgnn_r is None:
             continue
+        # legacy reports without rollout.curves cannot be crossed over; skip
+        if egnn_r.rollout.curves is None or hgnn_r.rollout.curves is None:
+            continue
         median_x = _crossover_step(
-            egnn_r["rollout"]["curves"]["median_mse"],
-            hgnn_r["rollout"]["curves"]["median_mse"],
+            egnn_r.rollout.curves.median_mse,
+            hgnn_r.rollout.curves.median_mse,
         )
         p95_x = _crossover_step(
-            egnn_r["rollout"]["curves"]["p95_mse"],
-            hgnn_r["rollout"]["curves"]["p95_mse"],
+            egnn_r.rollout.curves.p95_mse,
+            hgnn_r.rollout.curves.p95_mse,
         )
         # find first step where EGNN finite_fraction drops below 0.5
-        egnn_finite = egnn_r["rollout"]["curves"]["finite_fraction"]
         egnn_below_50 = next(
-            (i for i, f in enumerate(egnn_finite) if f is not None and f < 0.5),
+            (
+                i
+                for i, f in enumerate(egnn_r.rollout.curves.finite_fraction)
+                if f is not None and f < 0.5
+            ),
             None,
         )
-        hgnn_final = hgnn_r["rollout"]["finite_final_fraction"]
         lines.append(
             f"| {size} | {median_x if median_x is not None else 'never'} | "
             f"{p95_x if p95_x is not None else 'never'} | "
             f"{egnn_below_50 if egnn_below_50 is not None else 'never'} | "
-            f"{_fmt(hgnn_final)} |"
+            f"{_fmt(hgnn_r.rollout.finite_final_fraction)} |"
         )
     return "\n".join(lines)
 
 
-def _drift_median(group: dict | None, key: str) -> float | None:
-    """Return median drift from evaluator energy schema."""
-    if group is None:
-        return None
-    stats = group.get(key)
-    if not isinstance(stats, dict):
-        return None
-    return stats.get("median")
-
-
-def table_energy(reports: dict[str, dict[int, dict]]) -> str:
+def table_energy(reports: dict[str, dict[int, EvaluationReport]]) -> str:
     """Table 4: physical and learned-Hamiltonian energy drift."""
     lines = [
         "## Table 4: Energy behavior",
@@ -182,19 +176,18 @@ def table_energy(reports: dict[str, dict[int, dict]]) -> str:
             r = reports[model].get(size)
             if r is None:
                 continue
-            phys = r["energy"]["physical"]
-            learned = r["energy"].get("learned_hamiltonian")
-            phys_final = _drift_median(phys, "final_relative_drift")
-            phys_max = _drift_median(phys, "max_relative_drift")
-            learned_final = _drift_median(learned, "final_relative_drift")
+            phys = r.energy.physical
+            learned = r.energy.learned_hamiltonian
+            learned_final = learned.final_relative_drift.median if learned is not None else None
             lines.append(
-                f"| {size} | {model} | {_fmt(phys_final, sci=True)} | "
-                f"{_fmt(phys_max, sci=True)} | {_fmt(learned_final, sci=True)} |"
+                f"| {size} | {model} | {_fmt(phys.final_relative_drift.median, sci=True)} | "
+                f"{_fmt(phys.max_relative_drift.median, sci=True)} | "
+                f"{_fmt(learned_final, sci=True)} |"
             )
     return "\n".join(lines)
 
 
-def render_report(reports: dict[str, dict[int, dict]]) -> str:
+def render_report(reports: dict[str, dict[int, EvaluationReport]]) -> str:
     """Render all four tables into one markdown report."""
     return "\n\n".join(
         [

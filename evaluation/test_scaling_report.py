@@ -1,22 +1,81 @@
 """Tests for evaluation/scaling_report.py."""
 
+from typing import Any
+
+from evaluation._types import EvaluationReport
 from evaluation.scaling_report import _crossover_step, table_energy
 
 
-def _report(*, final: float, max_drift: float, learned_final: float | None = None) -> dict:
-    """Minimal metrics report containing energy fields used by scaling_report."""
-    energy = {
+def _report(
+    *,
+    final: float,
+    max_drift: float,
+    learned_final: float | None = None,
+) -> EvaluationReport:
+    """Minimal typed report containing the energy fields used by scaling_report."""
+    energy: dict[str, Any] = {
         "physical": {
-            "final_relative_drift": {"median": final},
-            "max_relative_drift": {"median": max_drift},
+            "final_relative_drift": {"mean": 0.0, "median": final, "max": 0.0, "p95": 0.0},
+            "max_relative_drift": {"mean": 0.0, "median": max_drift, "max": 0.0, "p95": 0.0},
+            "per_trajectory_final": [],
+            "per_trajectory_max": [],
         }
     }
     if learned_final is not None:
         energy["learned_hamiltonian"] = {
-            "final_relative_drift": {"median": learned_final},
-            "max_relative_drift": {"median": learned_final * 2},
+            "final_relative_drift": {
+                "mean": 0.0,
+                "median": learned_final,
+                "max": 0.0,
+                "p95": 0.0,
+            },
+            "max_relative_drift": {
+                "mean": 0.0,
+                "median": learned_final * 2,
+                "max": 0.0,
+                "p95": 0.0,
+            },
+            "per_trajectory_final": [],
+            "per_trajectory_max": [],
         }
-    return {"energy": energy}
+    return EvaluationReport.from_dict(
+        {
+            "metadata": {
+                "model_name": "x",
+                "checkpoint_path": "",
+                "config_path": "",
+                "test_path": "",
+                "device": "cpu",
+                "checkpoint_epoch": None,
+                "checkpoint_val_loss": None,
+                "run_id": None,
+                "git_commit": None,
+                "pos_std": 1.0,
+                "vel_std": 1.0,
+                "n_trajectories": 0,
+                "n_frames": 0,
+                "n_transitions": 0,
+                "n_particles": 0,
+            },
+            "single_step": {
+                "mse": {"mean": None, "median": None, "max": None, "p95": None, "p99": None},
+                "min_pairwise_distance": {
+                    "mean": None,
+                    "median": None,
+                    "max": None,
+                    "p5": None,
+                    "p50": None,
+                },
+            },
+            "rollout": {
+                "steps": {},
+                "first_nonfinite_step": [],
+                "thresholds": {},
+                "finite_final_fraction": None,
+            },
+            "energy": energy,
+        }
+    )
 
 
 def test_energy_table_reads_evaluator_energy_schema() -> None:
