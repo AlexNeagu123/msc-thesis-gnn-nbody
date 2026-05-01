@@ -20,12 +20,12 @@ from evaluation._types import (
     EvaluationReport,
     MseSummary,
     RolloutCurves,
+    RolloutMSE,
     RolloutReport,
     RolloutStepMetrics,
     SingleStepReport,
 )
 from evaluation.metrics import (
-    RolloutMSE,
     compute_energy,
     compute_rollout_mse,
     compute_single_step_metrics,

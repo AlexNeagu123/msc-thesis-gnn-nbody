@@ -1,8 +1,10 @@
-"""Typed contracts for evaluation reports.
+"""Typed contracts for evaluation reports and metric-computation results.
 
-Top-level entry point is `EvaluationReport.from_dict()`. Inner dataclasses
-do not expose their own `from_dict` to match the pattern in
-`training/_types.py`: a single top-level constructor builds the whole tree.
+Two kinds of types live here:
+    - Persisted report schema (EvaluationReport and its tree), with
+      EvaluationReport.from_dict as the single entry point.
+    - Intermediate metric-computation containers (RolloutMSE), returned by
+      evaluation/metrics.py and consumed by evaluate.py.
 
 References:
     - JSON schema produced by evaluation/evaluate.py:_build_report
@@ -12,6 +14,20 @@ References:
 
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
+import numpy.typing as npt
+
+
+@dataclass
+class RolloutMSE:
+    """Rollout MSE summary with divergence visibility."""
+
+    per_trajectory: npt.NDArray[np.floating]
+    mean: npt.NDArray[np.floating]
+    median: npt.NDArray[np.floating]
+    std: npt.NDArray[np.floating]
+    finite_fraction: npt.NDArray[np.floating]
 
 
 @dataclass
