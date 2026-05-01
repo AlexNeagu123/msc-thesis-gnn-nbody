@@ -133,3 +133,4 @@ class EpochMetrics:
     def to_csv_row(self) -> str:
         """Return one CSV row matching csv_header column order."""
         return f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e}"
+
