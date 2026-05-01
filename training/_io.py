@@ -28,15 +28,28 @@ def save_checkpoint(path: Path, checkpoint: Checkpoint) -> None:
 
 
 def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
-    """Load a checkpoint, normalizing legacy dict checkpoints into Checkpoint."""
+    """Load a checkpoint, normalizing legacy dict checkpoints into Checkpoint.
+
+    Validates that legacy dict checkpoints carry dict-shaped `model` and
+    `optimizer` state at the I/O boundary, so contract violations surface
+    here instead of later inside `nn.Module.load_state_dict`.
+    """
     raw = torch.load(path, weights_only=False, map_location=device)
     if isinstance(raw, Checkpoint):
         return raw
     if isinstance(raw, dict):
+        model_state = raw.get("model")
+        optimizer_state = raw.get("optimizer")
+        if not isinstance(model_state, dict):
+            msg = f"Checkpoint at {path} is missing a dict-shaped 'model' state"
+            raise ValueError(msg)
+        if not isinstance(optimizer_state, dict):
+            msg = f"Checkpoint at {path} is missing a dict-shaped 'optimizer' state"
+            raise ValueError(msg)
         return Checkpoint(
             epoch=raw.get("epoch", 0),
-            model=raw.get("model", {}),
-            optimizer=raw.get("optimizer", {}),
+            model=model_state,
+            optimizer=optimizer_state,
             val_loss=raw.get("val_loss", float("inf")),
             config=raw.get("config"),
             model_name=raw.get("model_name"),

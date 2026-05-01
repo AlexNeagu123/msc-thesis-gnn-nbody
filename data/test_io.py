@@ -7,9 +7,15 @@ read_trajectories and confirm states, energies, and metadata survive.
 from pathlib import Path
 
 import numpy as np
+import yaml
 
-from data._io import read_trajectories, write_trajectories
-from data._types import Trajectories, TrajectoryMetadata
+from data._io import (
+    load_data_config,
+    read_states,
+    read_trajectories,
+    write_trajectories,
+)
+from data._types import DataGenConfig, Trajectories, TrajectoryMetadata
 
 
 def _example_trajectories() -> Trajectories:
@@ -79,3 +85,46 @@ def test_write_creates_parent_directory(tmp_path: Path) -> None:
     nested = tmp_path / "a" / "b" / "c.h5"
     write_trajectories(nested, _example_trajectories())
     assert nested.exists()
+
+
+def test_read_states_skips_energies_and_metadata(tmp_path: Path) -> None:
+    """read_states returns just the trajectory array."""
+    original = _example_trajectories()
+    path = tmp_path / "states.h5"
+    write_trajectories(path, original)
+
+    states = read_states(path)
+
+    assert isinstance(states, np.ndarray)
+    assert np.array_equal(states, original.states)
+
+
+def test_load_data_config_parses_yaml(tmp_path: Path) -> None:
+    """load_data_config returns a typed DataGenConfig from YAML."""
+    raw = {
+        "n_particles": 3,
+        "t_end": 10.0,
+        "dt": 0.05,
+        "G": 1.0,
+        "mass": 1.0,
+        "min_distance": 0.1,
+        "pos_scale": 1.0,
+        "vel_scale": 0.5,
+        "seed": 42,
+        "n_train": 100,
+        "n_val": 20,
+        "n_test": 20,
+        "train_path": "train.h5",
+        "val_path": "val.h5",
+        "test_path": "test.h5",
+    }
+    path = tmp_path / "data.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    cfg = load_data_config(path)
+
+    assert isinstance(cfg, DataGenConfig)
+    assert cfg.simulation.n_particles == 3
+    assert len(cfg.splits) == 3
+    assert cfg.splits[0].name == "train"
+    assert cfg.splits[0].n_trajectories == 100

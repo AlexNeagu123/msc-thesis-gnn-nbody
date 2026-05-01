@@ -1,4 +1,4 @@
-"""HDF5 serialization for trajectory data.
+"""I/O for the data pipeline: HDF5 trajectories and YAML data-gen configs.
 
 Owns the on-disk schema (dataset names, metadata group) so producers
 (data/generate.py) and consumers (data/dataset.py, evaluation) never
@@ -6,18 +6,38 @@ touch raw h5py keys.
 
 References:
     - Trajectory bundle: data/_types.py (Trajectories, TrajectoryMetadata)
+    - Data-gen config:  data/_types.py (DataGenConfig)
 """
 
 from dataclasses import fields
 from pathlib import Path
 
 import h5py
+import numpy as np
+import yaml
 
-from data._types import Trajectories, TrajectoryMetadata
+from data._types import DataGenConfig, Trajectories, TrajectoryMetadata
 
 _TRAJECTORIES_KEY = "trajectories"
 _ENERGIES_KEY = "energies"
 _METADATA_GROUP = "metadata"
+
+
+def load_data_config(path: str | Path) -> DataGenConfig:
+    """Load a YAML data-gen config into a typed DataGenConfig."""
+    with Path(path).open() as f:
+        raw = yaml.safe_load(f)
+    return DataGenConfig.from_dict(raw)
+
+
+def read_states(path: Path) -> np.ndarray:
+    """Load only the trajectory states (hot path for dataset/evaluator).
+
+    Skips the energies and metadata datasets — use read_trajectories if you
+    need the full bundle.
+    """
+    with h5py.File(path, "r") as f:
+        return f[_TRAJECTORIES_KEY][:]
 
 
 def read_trajectories(path: Path) -> Trajectories:

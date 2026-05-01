@@ -14,9 +14,8 @@ from pathlib import Path
 
 import numpy as np
 import rebound
-import yaml
 
-from data._io import write_trajectories
+from data._io import load_data_config, write_trajectories
 from data._types import DataGenConfig, SimulationParams, Trajectories, TrajectoryMetadata
 from utils import get_logger
 
@@ -230,8 +229,5 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="configs/data.yaml")
     args = parser.parse_args()
 
-    with Path(args.config).open() as f:
-        raw = yaml.safe_load(f)
-
-    config = DataGenConfig.from_dict(raw)
+    config = load_data_config(args.config)
     Generator(config).run()

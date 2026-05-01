@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from data._io import read_trajectories
+from data._io import read_states
 
 
 class NBodyDataset(Dataset):
@@ -25,7 +25,7 @@ class NBodyDataset(Dataset):
                 data-scaling experiments to slice nested subsets from a larger
                 generated file.
         """
-        trajectories = read_trajectories(Path(path)).states
+        trajectories = read_states(Path(path))
 
         if n_trajectories is not None:
             available = trajectories.shape[0]

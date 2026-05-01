@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from data._io import read_trajectories
+from data._io import read_states
 from data.dataset import NBodyDataset
 from evaluation._io import write_evaluation_report, write_summary_csv
 from evaluation._types import (
@@ -61,7 +61,7 @@ def evaluate_checkpoint(
     pos_std, vel_std = _normalization_stats(cfg, checkpoint)
     model = _load_model(cfg, checkpoint, pos_std, vel_std, torch_device)
 
-    test_traj = read_trajectories(test_path).states
+    test_traj = read_states(test_path)
 
     sample_losses, min_distances = compute_single_step_metrics(model, str(test_path), torch_device)
     predicted = compute_rollouts(model, test_traj, torch_device)

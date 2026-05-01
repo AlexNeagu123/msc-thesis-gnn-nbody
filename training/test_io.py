@@ -97,6 +97,24 @@ def test_load_checkpoint_rejects_bad_type(tmp_path: Path) -> None:
         load_checkpoint(path, torch.device("cpu"))
 
 
+def test_load_checkpoint_rejects_dict_missing_model(tmp_path: Path) -> None:
+    """Legacy dict missing a dict-shaped 'model' state fails at I/O boundary."""
+    path = tmp_path / "missing_model.pt"
+    torch.save({"epoch": 1, "optimizer": {}, "val_loss": 0.1}, path)
+
+    with pytest.raises(ValueError, match="missing a dict-shaped 'model'"):
+        load_checkpoint(path, torch.device("cpu"))
+
+
+def test_load_checkpoint_rejects_dict_missing_optimizer(tmp_path: Path) -> None:
+    """Legacy dict missing a dict-shaped 'optimizer' state fails at I/O boundary."""
+    path = tmp_path / "missing_opt.pt"
+    torch.save({"epoch": 1, "model": {"w": torch.tensor([1.0])}, "val_loss": 0.1}, path)
+
+    with pytest.raises(ValueError, match="missing a dict-shaped 'optimizer'"):
+        load_checkpoint(path, torch.device("cpu"))
+
+
 def test_init_metrics_csv_writes_header(tmp_path: Path) -> None:
     """init_metrics_csv creates the file with the EpochMetrics header."""
     path = tmp_path / "metrics.csv"

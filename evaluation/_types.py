@@ -365,9 +365,7 @@ class SummaryRow:
         row["rollout_final_finite_fraction"] = rollout.finite_final_fraction
 
         for threshold, divergence in rollout.thresholds.items():
-            row[f"rollout_final_fraction_below_mse_{threshold}"] = (
-                divergence.final_fraction_below
-            )
+            row[f"rollout_final_fraction_below_mse_{threshold}"] = divergence.final_fraction_below
 
         if learned is not None:
             row["learned_h_final_drift_mean"] = learned.final_relative_drift.mean
