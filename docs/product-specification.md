@@ -285,11 +285,15 @@ Notebook parameters:
 
 | Parameter | Values | Meaning |
 | --- | --- | --- |
+| `GIT_REF` | Branch or tag | Checkout target for the code running on Colab. |
+| `RUN_MODE` | `noise_sweep`, `single` | Run an EGNN noise sweep or one selected model. |
 | `MODEL` | `egnn`, `hgnn` | Select architecture. |
 | `N_TRAIN` | `1000`, `2000`, `5000`, `10000` | Select training subset size. |
 | `EPOCHS` | Integer | Training duration. |
+| `NOISE_FACTORS` | Comma-separated floats | Noise factors used when `RUN_MODE=noise_sweep`. |
 | `RUN_TRAINING` | Boolean | Train selected model. |
 | `RUN_EVALUATION` | Boolean | Evaluate selected checkpoint. |
+| `SKIP_COMPLETED` | Boolean | Skip Drive run folders that already contain `evaluation/metrics.json`. |
 
 Expected Drive input:
 
@@ -303,6 +307,7 @@ Drive output:
 
 ```text
 MyDrive/masters-thesis/runs/<model>/n<N_TRAIN>/<run_id>/
+MyDrive/masters-thesis/runs/noise_sweep/egnn/n<N_TRAIN>_e<EPOCHS>/nf_<noise>/<run_id>/
 ```
 
 The notebook validates that `train.h5` contains enough trajectories before training. This prevents a long run from silently using the wrong dataset.
