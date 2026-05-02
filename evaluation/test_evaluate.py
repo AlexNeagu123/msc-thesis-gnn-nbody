@@ -149,15 +149,18 @@ def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
     assert data["metadata"]["checkpoint_epoch"] == 1
     assert data["metadata"]["n_frames"] == 4
     assert data["metadata"]["n_transitions"] == 3
-    assert "single_step" in data
-    assert "p95_mse" in data["rollout"]["steps"]["1"]
-    assert "mean_finite_mse" in data["rollout"]["steps"]["1"]
+    assert "state_mse" in data["single_step"]
+    assert "position_mse" in data["single_step"]
+    assert "velocity_mse" in data["single_step"]
+    assert "p95" in data["rollout"]["steps"]["1"]["position_mse"]
+    assert "mean_finite" in data["rollout"]["steps"]["1"]["state_mse"]
     assert data["rollout"]["curves"]["step"] == [0, 1, 2, 3]
-    assert len(data["rollout"]["curves"]["median_mse"]) == 4
-    assert len(data["rollout"]["curves"]["p95_mse"]) == 4
-    assert data["rollout"]["curves"]["finite_fraction"][0] == 1.0
-    assert "thresholds" in data["rollout"]
-    assert "10" in data["rollout"]["thresholds"]
+    assert len(data["rollout"]["curves"]["position_mse"]["median"]) == 4
+    assert len(data["rollout"]["curves"]["state_mse"]["p95"]) == 4
+    assert data["rollout"]["curves"]["state_mse"]["finite_fraction"][0] == 1.0
+    assert "state_mse_thresholds" in data["rollout"]
+    assert "position_mse_thresholds" in data["rollout"]
+    assert "10" in data["rollout"]["state_mse_thresholds"]
 
     with (output_dir / "summary.csv").open() as f:
         rows = list(csv.DictReader(f))
@@ -165,9 +168,9 @@ def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
     assert rows[0]["model_name"] == "egnn"
     assert rows[0]["n_frames"] == "4"
     assert rows[0]["n_transitions"] == "3"
-    assert "rollout_step_1_mean_finite_mse" in rows[0]
-    assert "rollout_step_1_p95_mse" in rows[0]
-    assert "rollout_final_fraction_below_mse_10" in rows[0]
+    assert "rollout_step_1_state_mse_mean_finite" in rows[0]
+    assert "rollout_step_1_position_mse_p95" in rows[0]
+    assert "rollout_final_fraction_below_state_mse_10" in rows[0]
     assert "physical_energy_final_drift_mean" in rows[0]
     assert "true_energy_final_drift_mean" not in rows[0]
 

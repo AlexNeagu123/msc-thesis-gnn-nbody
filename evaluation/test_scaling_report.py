@@ -3,7 +3,7 @@
 from typing import Any
 
 from evaluation._types import EvaluationReport
-from evaluation.scaling_report import _crossover_step, table_energy
+from evaluation.scaling_report import _crossover_step, table_energy, table_local_accuracy
 
 
 def _report(
@@ -12,7 +12,7 @@ def _report(
     max_drift: float,
     learned_final: float | None = None,
 ) -> EvaluationReport:
-    """Minimal typed report containing the energy fields used by scaling_report."""
+    """Minimal typed report containing the fields used by scaling_report."""
     energy: dict[str, Any] = {
         "physical": {
             "final_relative_drift": {"mean": 0.0, "median": final, "max": 0.0, "p95": 0.0},
@@ -38,6 +38,7 @@ def _report(
             "per_trajectory_final": [],
             "per_trajectory_max": [],
         }
+    empty_mse = {"mean": None, "median": None, "max": None, "p95": None, "p99": None}
     return EvaluationReport.from_dict(
         {
             "metadata": {
@@ -47,7 +48,7 @@ def _report(
                 "test_path": "",
                 "device": "cpu",
                 "checkpoint_epoch": None,
-                "checkpoint_val_loss": None,
+                "checkpoint_val_loss": 0.1234,
                 "run_id": None,
                 "git_commit": None,
                 "pos_std": 1.0,
@@ -58,7 +59,9 @@ def _report(
                 "n_particles": 0,
             },
             "single_step": {
-                "mse": {"mean": None, "median": None, "max": None, "p95": None, "p99": None},
+                "state_mse": {**empty_mse, "median": 3.0},
+                "position_mse": {**empty_mse, "median": 1.0},
+                "velocity_mse": {**empty_mse, "median": 2.0},
                 "min_pairwise_distance": {
                     "mean": None,
                     "median": None,
@@ -70,8 +73,9 @@ def _report(
             "rollout": {
                 "steps": {},
                 "first_nonfinite_step": [],
-                "thresholds": {},
-                "finite_final_fraction": None,
+                "state_mse_thresholds": {},
+                "position_mse_thresholds": {},
+                "state_final_finite_fraction": None,
             },
             "energy": energy,
         }
@@ -94,6 +98,16 @@ def test_energy_table_reads_evaluator_energy_schema() -> None:
     assert "2.448e+00" in table
     assert "5.547e-02" in table
     assert "| 1000 | hgnn | n/a" not in table
+
+
+def test_local_accuracy_table_uses_split_mse_fields() -> None:
+    """Local-accuracy report exposes position, velocity, and state MSE separately."""
+    reports = {"egnn": {1000: _report(final=0.0, max_drift=0.0)}}
+
+    table = table_local_accuracy(reports)
+
+    assert "Position median MSE" in table
+    assert "| 1000 | egnn | 0.1234 | 1.000e+00 | 2.000e+00 | 3.000e+00 |" in table
 
 
 def test_crossover_step_ignores_initial_identical_state() -> None:

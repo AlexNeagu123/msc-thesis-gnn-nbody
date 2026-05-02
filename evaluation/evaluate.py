@@ -20,9 +20,13 @@ from evaluation._types import (
     EvaluationReport,
     MseSummary,
     RolloutCurves,
+    RolloutMetricCurves,
+    RolloutMetricSeries,
+    RolloutMetricSummary,
     RolloutMSE,
     RolloutReport,
     RolloutStepMetrics,
+    SingleStepMetrics,
     SingleStepReport,
 )
 from evaluation.metrics import (
@@ -64,7 +68,7 @@ def evaluate_checkpoint(
 
     test_traj = read_states(test_path)
 
-    sample_losses, min_distances = compute_single_step_metrics(model, str(test_path), torch_device)
+    single_step_metrics = compute_single_step_metrics(model, str(test_path), torch_device)
     predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
 
@@ -80,8 +84,7 @@ def evaluate_checkpoint(
         vel_std=vel_std,
         test_traj=test_traj,
         predicted=predicted,
-        sample_losses=sample_losses,
-        min_distances=min_distances,
+        single_step_metrics=single_step_metrics,
         rollout_mse=rollout_mse,
         steps=steps,
         model=model,
@@ -108,8 +111,7 @@ def _build_report(
     vel_std: float,
     test_traj: np.ndarray,
     predicted: np.ndarray,
-    sample_losses: np.ndarray,
-    min_distances: np.ndarray,
+    single_step_metrics: SingleStepMetrics,
     rollout_mse: RolloutMSE,
     steps: list[int],
     model: nn.Module,
@@ -137,16 +139,25 @@ def _build_report(
     )
 
     single_step = SingleStepReport(
-        mse=_summarize_mse(sample_losses),
-        min_pairwise_distance=_summarize_distance(min_distances),
+        state_mse=_summarize_mse(single_step_metrics.state_mse),
+        position_mse=_summarize_mse(single_step_metrics.position_mse),
+        velocity_mse=_summarize_mse(single_step_metrics.velocity_mse),
+        min_pairwise_distance=_summarize_distance(single_step_metrics.min_pairwise_distance),
     )
 
     rollout = RolloutReport(
         steps=_rollout_steps(rollout_mse, steps),
         curves=_rollout_curves(rollout_mse),
-        first_nonfinite_step=_first_nonfinite_steps(rollout_mse.per_trajectory),
-        thresholds=_divergence_report(rollout_mse.per_trajectory, DIVERGENCE_THRESHOLDS),
-        finite_final_fraction=_float(rollout_mse.finite_fraction[-1]),
+        first_nonfinite_step=_first_nonfinite_steps(rollout_mse.state.per_trajectory),
+        state_mse_thresholds=_divergence_report(
+            rollout_mse.state.per_trajectory,
+            DIVERGENCE_THRESHOLDS,
+        ),
+        position_mse_thresholds=_divergence_report(
+            rollout_mse.position.per_trajectory,
+            DIVERGENCE_THRESHOLDS,
+        ),
+        state_final_finite_fraction=_float(rollout_mse.state.finite_fraction[-1]),
     )
 
     energy = EnergyReport(
@@ -213,29 +224,45 @@ def _rollout_steps(
     """Summarize rollout MSE at selected steps."""
     return {
         str(step): RolloutStepMetrics(
-            mean_finite_mse=_float(rollout_mse.mean[step]),
-            median_mse=_float(rollout_mse.median[step]),
-            p95_mse=_optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95)),
-            finite_fraction=_float(rollout_mse.finite_fraction[step]),
+            state_mse=_rollout_metric_summary(rollout_mse.state, step),
+            position_mse=_rollout_metric_summary(rollout_mse.position, step),
+            velocity_mse=_rollout_metric_summary(rollout_mse.velocity, step),
         )
         for step in steps
     }
 
 
+def _rollout_metric_summary(series: RolloutMetricSeries, step: int) -> RolloutMetricSummary:
+    """Summarize one rollout MSE series at a selected step."""
+    return RolloutMetricSummary(
+        mean_finite=_float(series.mean[step]),
+        median=_float(series.median[step]),
+        p95=_optional_float(_finite_percentile(series.per_trajectory[:, step], 95)),
+        finite_fraction=_float(series.finite_fraction[step]),
+    )
+
+
 def _rollout_curves(rollout_mse: RolloutMSE) -> RolloutCurves:
     """Return full per-step rollout curves for crossover analysis."""
-    n_steps = len(rollout_mse.mean)
-    steps = list(range(n_steps))
-
     return RolloutCurves(
-        step=steps,
-        mean_finite_mse=[_float(value) for value in rollout_mse.mean],
-        median_mse=[_float(value) for value in rollout_mse.median],
-        p95_mse=[
-            _optional_float(_finite_percentile(rollout_mse.per_trajectory[:, step], 95))
+        step=list(range(len(rollout_mse.state.mean))),
+        state_mse=_rollout_metric_curves(rollout_mse.state),
+        position_mse=_rollout_metric_curves(rollout_mse.position),
+        velocity_mse=_rollout_metric_curves(rollout_mse.velocity),
+    )
+
+
+def _rollout_metric_curves(series: RolloutMetricSeries) -> RolloutMetricCurves:
+    """Return full per-step curves for one rollout MSE series."""
+    steps = range(len(series.mean))
+    return RolloutMetricCurves(
+        mean_finite=[_float(value) for value in series.mean],
+        median=[_float(value) for value in series.median],
+        p95=[
+            _optional_float(_finite_percentile(series.per_trajectory[:, step], 95))
             for step in steps
         ],
-        finite_fraction=[_float(value) for value in rollout_mse.finite_fraction],
+        finite_fraction=[_float(value) for value in series.finite_fraction],
     )
 
 

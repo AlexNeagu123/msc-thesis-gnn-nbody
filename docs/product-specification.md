@@ -41,7 +41,7 @@ The software can:
 - Train EGNN and HGNN from YAML experiment configurations.
 - Slice a larger training dataset into controlled `N_TRAIN` subsets for data-scaling studies.
 - Run EGNN noise-injection and learning-rate sweeps.
-- Evaluate checkpoints with one-step metrics, autoregressive rollout curves, divergence thresholds, and energy drift.
+- Evaluate checkpoints with state, position, velocity, divergence, and energy-drift metrics.
 - Render scaling-study reports from saved `metrics.json` files.
 - Run long training and evaluation jobs from Google Colab while persisting outputs to Google Drive.
 
@@ -261,11 +261,13 @@ The evaluator measures:
 
 | Metric family | Question answered |
 | --- | --- |
-| Single-step MSE | How accurate is one learned transition? |
+| Single-step state MSE | How accurate is one learned transition over `[x, y, vx, vy]`? |
+| Single-step position/velocity MSE | Which part of the transition error comes from geometry vs momentum? |
 | Minimum pairwise distance | Are errors associated with close encounters? |
-| Autoregressive rollout MSE | What happens when predictions are fed back into the model? |
+| Autoregressive rollout state MSE | What happens when predictions are fed back into the model? |
+| Autoregressive rollout position MSE | Literature-facing trajectory error, separated from velocity error. |
 | Finite-state fraction | How many rollouts remain numerically valid? |
-| Divergence thresholds | At which step does error cross thesis-relevant limits? |
+| State/position divergence thresholds | At which step does error cross thesis-relevant limits? |
 | Physical-energy drift | Does the predicted trajectory preserve the true conserved quantity? |
 | Learned-Hamiltonian drift | For HGNN, is the learned energy internally stable? |
 

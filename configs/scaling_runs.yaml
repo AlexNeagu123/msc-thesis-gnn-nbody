@@ -1,0 +1,8 @@
+egnn:
+  1000: runs/egnn/n1000/20260427_084527/evaluation/metrics.json
+  2000: runs/egnn/n2000/20260427_133940/evaluation/metrics.json
+  5000: runs/egnn/n5000/20260428_095211/evaluation/metrics.json
+hgnn:
+  1000: runs/hgnn/n1000/20260427_093423/evaluation/metrics.json
+  2000: runs/hgnn/n2000/20260427_160209/evaluation/metrics.json
+  5000: runs/hgnn/n5000/20260427_212058/evaluation/metrics.json

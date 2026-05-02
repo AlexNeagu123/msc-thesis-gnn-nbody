@@ -39,7 +39,21 @@ def _egnn_fixture() -> dict:
             "n_particles": 3,
         },
         "single_step": {
-            "mse": {"mean": 0.1, "median": 0.1, "max": 0.1, "p95": 0.1, "p99": 0.1},
+            "state_mse": {"mean": 0.1, "median": 0.1, "max": 0.1, "p95": 0.1, "p99": 0.1},
+            "position_mse": {
+                "mean": 0.05,
+                "median": 0.05,
+                "max": 0.05,
+                "p95": 0.05,
+                "p99": 0.05,
+            },
+            "velocity_mse": {
+                "mean": 0.15,
+                "median": 0.15,
+                "max": 0.15,
+                "p95": 0.15,
+                "p99": 0.15,
+            },
             "min_pairwise_distance": {
                 "mean": 0.5,
                 "median": 0.5,
@@ -51,24 +65,55 @@ def _egnn_fixture() -> dict:
         "rollout": {
             "steps": {
                 "1": {
-                    "mean_finite_mse": 0.1,
-                    "median_mse": 0.1,
-                    "p95_mse": 0.1,
-                    "finite_fraction": 1.0,
+                    "state_mse": {
+                        "mean_finite": 0.1,
+                        "median": 0.1,
+                        "p95": 0.1,
+                        "finite_fraction": 1.0,
+                    },
+                    "position_mse": {
+                        "mean_finite": 0.05,
+                        "median": 0.05,
+                        "p95": 0.05,
+                        "finite_fraction": 1.0,
+                    },
+                    "velocity_mse": {
+                        "mean_finite": 0.15,
+                        "median": 0.15,
+                        "p95": 0.15,
+                        "finite_fraction": 1.0,
+                    },
                 },
             },
             "curves": {
                 "step": [0, 1],
-                "mean_finite_mse": [0.0, 0.1],
-                "median_mse": [0.0, 0.1],
-                "p95_mse": [0.0, 0.1],
-                "finite_fraction": [1.0, 1.0],
+                "state_mse": {
+                    "mean_finite": [0.0, 0.1],
+                    "median": [0.0, 0.1],
+                    "p95": [0.0, 0.1],
+                    "finite_fraction": [1.0, 1.0],
+                },
+                "position_mse": {
+                    "mean_finite": [0.0, 0.05],
+                    "median": [0.0, 0.05],
+                    "p95": [0.0, 0.05],
+                    "finite_fraction": [1.0, 1.0],
+                },
+                "velocity_mse": {
+                    "mean_finite": [0.0, 0.15],
+                    "median": [0.0, 0.15],
+                    "p95": [0.0, 0.15],
+                    "finite_fraction": [1.0, 1.0],
+                },
             },
             "first_nonfinite_step": [None],
-            "thresholds": {
+            "state_mse_thresholds": {
                 "1": {"first_step": [None], "final_fraction_below": 1.0},
             },
-            "finite_final_fraction": 1.0,
+            "position_mse_thresholds": {
+                "1": {"first_step": [None], "final_fraction_below": 1.0},
+            },
+            "state_final_finite_fraction": 1.0,
         },
         "energy": {
             "physical": {
@@ -104,8 +149,8 @@ def test_write_summary_csv_header_matches_summary_row(tmp_path: Path) -> None:
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["model_name"] == "egnn"
-    assert "rollout_step_1_mean_finite_mse" in rows[0]
-    assert "rollout_final_fraction_below_mse_1" in rows[0]
+    assert "rollout_step_1_state_mse_mean_finite" in rows[0]
+    assert "rollout_final_fraction_below_state_mse_1" in rows[0]
     # learned_h_* columns absent for EGNN
     assert all(not k.startswith("learned_h_") for k in rows[0])
 
