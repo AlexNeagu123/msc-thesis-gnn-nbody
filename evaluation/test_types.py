@@ -32,12 +32,26 @@ def _egnn_report_dict() -> dict:
             "n_particles": 3,
         },
         "single_step": {
-            "mse": {
+            "state_mse": {
                 "mean": 0.06,
                 "median": 0.0002,
                 "max": 77.8,
                 "p95": 0.055,
                 "p99": 0.69,
+            },
+            "position_mse": {
+                "mean": 0.03,
+                "median": 0.0001,
+                "max": 38.9,
+                "p95": 0.028,
+                "p99": 0.34,
+            },
+            "velocity_mse": {
+                "mean": 0.09,
+                "median": 0.0003,
+                "max": 116.7,
+                "p95": 0.083,
+                "p99": 1.04,
             },
             "min_pairwise_distance": {
                 "mean": 0.75,
@@ -50,31 +64,77 @@ def _egnn_report_dict() -> dict:
         "rollout": {
             "steps": {
                 "1": {
-                    "mean_finite_mse": 0.22,
-                    "median_mse": 0.0001,
-                    "p95_mse": 0.0013,
-                    "finite_fraction": 1.0,
+                    "state_mse": {
+                        "mean_finite": 0.22,
+                        "median": 0.0001,
+                        "p95": 0.0013,
+                        "finite_fraction": 1.0,
+                    },
+                    "position_mse": {
+                        "mean_finite": 0.11,
+                        "median": 0.00005,
+                        "p95": 0.0007,
+                        "finite_fraction": 1.0,
+                    },
+                    "velocity_mse": {
+                        "mean_finite": 0.33,
+                        "median": 0.00015,
+                        "p95": 0.002,
+                        "finite_fraction": 1.0,
+                    },
                 },
                 "10": {
-                    "mean_finite_mse": 1.09,
-                    "median_mse": 0.06,
-                    "p95_mse": 6.3,
-                    "finite_fraction": 1.0,
+                    "state_mse": {
+                        "mean_finite": 1.09,
+                        "median": 0.06,
+                        "p95": 6.3,
+                        "finite_fraction": 1.0,
+                    },
+                    "position_mse": {
+                        "mean_finite": 0.55,
+                        "median": 0.03,
+                        "p95": 3.2,
+                        "finite_fraction": 1.0,
+                    },
+                    "velocity_mse": {
+                        "mean_finite": 1.63,
+                        "median": 0.09,
+                        "p95": 9.4,
+                        "finite_fraction": 1.0,
+                    },
                 },
             },
             "curves": {
                 "step": [0, 1, 2, 3],
-                "mean_finite_mse": [0.0, 0.22, 0.5, None],
-                "median_mse": [0.0, 0.0001, 0.06, 23.7],
-                "p95_mse": [0.0, 0.0013, 6.3, None],
-                "finite_fraction": [1.0, 1.0, 1.0, 0.85],
+                "state_mse": {
+                    "mean_finite": [0.0, 0.22, 0.5, None],
+                    "median": [0.0, 0.0001, 0.06, 23.7],
+                    "p95": [0.0, 0.0013, 6.3, None],
+                    "finite_fraction": [1.0, 1.0, 1.0, 0.85],
+                },
+                "position_mse": {
+                    "mean_finite": [0.0, 0.11, 0.25, None],
+                    "median": [0.0, 0.00005, 0.03, 12.0],
+                    "p95": [0.0, 0.0007, 3.2, None],
+                    "finite_fraction": [1.0, 1.0, 1.0, 0.9],
+                },
+                "velocity_mse": {
+                    "mean_finite": [0.0, 0.33, 0.75, None],
+                    "median": [0.0, 0.00015, 0.09, 35.0],
+                    "p95": [0.0, 0.002, 9.4, None],
+                    "finite_fraction": [1.0, 1.0, 1.0, 0.85],
+                },
             },
             "first_nonfinite_step": [None, None, 145, None],
-            "thresholds": {
+            "state_mse_thresholds": {
                 "1": {"first_step": [16, 7, None, 9], "final_fraction_below": 0.0},
                 "10": {"first_step": [21, 13, 33, 48], "final_fraction_below": 0.0},
             },
-            "finite_final_fraction": 0.67,
+            "position_mse_thresholds": {
+                "1": {"first_step": [18, 8, None, 11], "final_fraction_below": 0.25},
+                "10": {"first_step": [23, 14, 35, 49], "final_fraction_below": 0.0},
+            },
+            "state_final_finite_fraction": 0.67,
         },
         "energy": {
             "physical": {
@@ -142,9 +202,11 @@ def test_evaluation_report_typed_access() -> None:
     report = EvaluationReport.from_dict(_egnn_report_dict())
     assert report.metadata.model_name == "egnn"
     assert report.metadata.checkpoint_val_loss == 0.016
-    assert report.single_step.mse.median == 0.0002
+    assert report.single_step.state_mse.median == 0.0002
+    assert report.single_step.position_mse.median == 0.0001
     assert report.rollout.curves is not None
-    assert report.rollout.curves.median_mse[2] == 0.06
+    assert report.rollout.curves.state_mse.median[2] == 0.06
+    assert report.rollout.curves.position_mse.median[2] == 0.03
     assert report.energy.physical.final_relative_drift.median == 1.39
     assert report.energy.learned_hamiltonian is None
 
@@ -167,17 +229,18 @@ def test_summary_row_includes_dynamic_step_keys() -> None:
     """CSV row has rollout_step_<n>_* columns for each step in the report."""
     report = EvaluationReport.from_dict(_egnn_report_dict())
     row = SummaryRow.from_report(report).to_csv_row()
-    assert "rollout_step_1_mean_finite_mse" in row
-    assert "rollout_step_10_p95_mse" in row
-    assert row["rollout_step_1_finite_fraction"] == 1.0
+    assert "rollout_step_1_state_mse_mean_finite" in row
+    assert "rollout_step_10_position_mse_p95" in row
+    assert row["rollout_step_1_state_mse_finite_fraction"] == 1.0
 
 
 def test_summary_row_includes_dynamic_threshold_keys() -> None:
-    """CSV row has rollout_final_fraction_below_mse_<t> for each threshold."""
+    """CSV row has state and position threshold columns."""
     report = EvaluationReport.from_dict(_egnn_report_dict())
     row = SummaryRow.from_report(report).to_csv_row()
-    assert "rollout_final_fraction_below_mse_1" in row
-    assert row["rollout_final_fraction_below_mse_10"] == 0.0
+    assert "rollout_final_fraction_below_state_mse_1" in row
+    assert "rollout_final_fraction_below_position_mse_1" in row
+    assert row["rollout_final_fraction_below_position_mse_1"] == 0.25
 
 
 def test_summary_row_excludes_learned_h_for_egnn() -> None:
@@ -196,7 +259,7 @@ def test_summary_row_includes_learned_h_for_hgnn() -> None:
 
 
 def test_existing_metrics_json_round_trip() -> None:
-    """Every on-disk metrics.json must survive from_dict -> to_dict unchanged."""
+    """Every on-disk metrics.json must parse into the current typed schema."""
     files = sorted(Path("results/evaluation").glob("**/metrics.json"))
     if not files:
         return
@@ -204,7 +267,7 @@ def test_existing_metrics_json_round_trip() -> None:
         with path.open() as f:
             original = json.load(f)
         out = EvaluationReport.from_dict(original).to_dict()
-        assert out == original, f"round-trip mismatch for {path}"
+        assert EvaluationReport.from_dict(out).to_dict() == out, f"schema parse failed for {path}"
 
 
 _EXPECTED_STATIC_COLUMNS = (
@@ -216,11 +279,21 @@ _EXPECTED_STATIC_COLUMNS = (
     "n_frames",
     "n_transitions",
     "n_particles",
-    "single_step_mse_mean",
-    "single_step_mse_median",
-    "single_step_mse_p95",
-    "single_step_mse_p99",
-    "single_step_mse_max",
+    "single_step_state_mse_mean",
+    "single_step_state_mse_median",
+    "single_step_state_mse_p95",
+    "single_step_state_mse_p99",
+    "single_step_state_mse_max",
+    "single_step_position_mse_mean",
+    "single_step_position_mse_median",
+    "single_step_position_mse_p95",
+    "single_step_position_mse_p99",
+    "single_step_position_mse_max",
+    "single_step_velocity_mse_mean",
+    "single_step_velocity_mse_median",
+    "single_step_velocity_mse_p95",
+    "single_step_velocity_mse_p99",
+    "single_step_velocity_mse_max",
     "physical_energy_final_drift_mean",
     "physical_energy_final_drift_median",
     "physical_energy_final_drift_p95",
@@ -251,18 +324,36 @@ def test_summary_row_egnn_column_order_pinned() -> None:
     expected = (
         *_EXPECTED_STATIC_COLUMNS,
         # per-step in report.rollout.steps insertion order ("1", "10")
-        "rollout_step_1_mean_finite_mse",
-        "rollout_step_1_median_mse",
-        "rollout_step_1_p95_mse",
-        "rollout_step_1_finite_fraction",
-        "rollout_step_10_mean_finite_mse",
-        "rollout_step_10_median_mse",
-        "rollout_step_10_p95_mse",
-        "rollout_step_10_finite_fraction",
-        "rollout_final_finite_fraction",
-        # per-threshold in report.rollout.thresholds insertion order ("1", "10")
-        "rollout_final_fraction_below_mse_1",
-        "rollout_final_fraction_below_mse_10",
+        "rollout_step_1_state_mse_mean_finite",
+        "rollout_step_1_state_mse_median",
+        "rollout_step_1_state_mse_p95",
+        "rollout_step_1_state_mse_finite_fraction",
+        "rollout_step_1_position_mse_mean_finite",
+        "rollout_step_1_position_mse_median",
+        "rollout_step_1_position_mse_p95",
+        "rollout_step_1_position_mse_finite_fraction",
+        "rollout_step_1_velocity_mse_mean_finite",
+        "rollout_step_1_velocity_mse_median",
+        "rollout_step_1_velocity_mse_p95",
+        "rollout_step_1_velocity_mse_finite_fraction",
+        "rollout_step_10_state_mse_mean_finite",
+        "rollout_step_10_state_mse_median",
+        "rollout_step_10_state_mse_p95",
+        "rollout_step_10_state_mse_finite_fraction",
+        "rollout_step_10_position_mse_mean_finite",
+        "rollout_step_10_position_mse_median",
+        "rollout_step_10_position_mse_p95",
+        "rollout_step_10_position_mse_finite_fraction",
+        "rollout_step_10_velocity_mse_mean_finite",
+        "rollout_step_10_velocity_mse_median",
+        "rollout_step_10_velocity_mse_p95",
+        "rollout_step_10_velocity_mse_finite_fraction",
+        "rollout_state_final_finite_fraction",
+        # per-threshold in insertion order ("1", "10"), state then position
+        "rollout_final_fraction_below_state_mse_1",
+        "rollout_final_fraction_below_state_mse_10",
+        "rollout_final_fraction_below_position_mse_1",
+        "rollout_final_fraction_below_position_mse_10",
     )
     assert cols == expected
 

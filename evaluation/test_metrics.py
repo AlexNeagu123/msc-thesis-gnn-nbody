@@ -27,8 +27,23 @@ def test_compute_rollout_mse_tracks_nonfinite_rollouts() -> None:
 
     mse = compute_rollout_mse(true, predicted)
 
-    assert mse.per_trajectory.shape == (2, 3)
-    assert np.isnan(mse.per_trajectory[1, 2])
-    assert mse.mean[2] == 0.0
-    assert mse.median[2] == 0.0
-    assert mse.finite_fraction[2] == 0.5
+    assert mse.state.per_trajectory.shape == (2, 3)
+    assert np.isnan(mse.state.per_trajectory[1, 2])
+    assert np.isnan(mse.position.per_trajectory[1, 2])
+    assert mse.state.mean[2] == 0.0
+    assert mse.state.median[2] == 0.0
+    assert mse.state.finite_fraction[2] == 0.5
+
+
+def test_compute_rollout_mse_splits_position_and_velocity() -> None:
+    """Rollout MSE exposes position-only and velocity-only errors."""
+    true = np.zeros((1, 2, 1, 5))
+    predicted = np.zeros_like(true)
+    predicted[0, 1, 0, 0] = 2.0
+    predicted[0, 1, 0, 2] = 4.0
+
+    mse = compute_rollout_mse(true, predicted)
+
+    assert mse.position.per_trajectory[0, 1] == 2.0
+    assert mse.velocity.per_trajectory[0, 1] == 8.0
+    assert mse.state.per_trajectory[0, 1] == 5.0

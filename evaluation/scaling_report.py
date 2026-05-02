@@ -69,29 +69,30 @@ def table_local_accuracy(reports: dict[str, dict[int, EvaluationReport]]) -> str
     lines = [
         "## Table 1: Local accuracy vs dataset size",
         "",
-        "| Size | Model | Val loss | Single-step median MSE | Single-step p95 MSE |",
-        "|---|---|---:|---:|---:|",
+        "| Size | Model | Val loss | Position median MSE | Velocity median MSE | State median MSE |",
+        "|---|---|---:|---:|---:|---:|",
     ]
     for size in _collect_sizes(reports):
         for model in sorted(reports.keys()):
             r = reports[model].get(size)
             if r is None:
                 continue
-            single = r.single_step.mse
+            single = r.single_step
             lines.append(
                 f"| {size} | {model} | {_fmt(r.metadata.checkpoint_val_loss)} | "
-                f"{_fmt(single.median, sci=True)} | "
-                f"{_fmt(single.p95, sci=True)} |"
+                f"{_fmt(single.position_mse.median, sci=True)} | "
+                f"{_fmt(single.velocity_mse.median, sci=True)} | "
+                f"{_fmt(single.state_mse.median, sci=True)} |"
             )
     return "\n".join(lines)
 
 
 def table_rollout_stability(reports: dict[str, dict[int, EvaluationReport]]) -> str:
-    """Table 2: rollout median MSE at fixed steps + final finite fraction."""
+    """Table 2: position rollout median MSE at fixed steps + state finite fraction."""
     headers = (
         "| Size | Model |"
-        + "|".join(f" Step {s} median " for s in ROLLOUT_STEPS)
-        + "| Final finite fraction |"
+        + "|".join(f" Step {s} position median " for s in ROLLOUT_STEPS)
+        + "| State final finite fraction |"
     )
     sep = "|---|---|" + "|".join(["---:"] * (len(ROLLOUT_STEPS) + 1)) + "|"
     lines = ["## Table 2: Long-horizon rollout stability", "", headers, sep]
@@ -100,11 +101,13 @@ def table_rollout_stability(reports: dict[str, dict[int, EvaluationReport]]) -> 
             r = reports[model].get(size)
             if r is None:
                 continue
-            cells = [_fmt(r.rollout.steps[str(s)].median_mse, sci=True) for s in ROLLOUT_STEPS]
+            cells = [
+                _fmt(r.rollout.steps[str(s)].position_mse.median, sci=True) for s in ROLLOUT_STEPS
+            ]
             lines.append(
                 f"| {size} | {model} | "
                 + " | ".join(cells)
-                + f" | {_fmt(r.rollout.finite_final_fraction)} |"
+                + f" | {_fmt(r.rollout.state_final_finite_fraction)} |"
             )
     return "\n".join(lines)
 
@@ -122,11 +125,11 @@ def _crossover_step(egnn_curve: list[float | None], hgnn_curve: list[float | Non
 
 
 def table_crossover(reports: dict[str, dict[int, EvaluationReport]]) -> str:
-    """Table 3: crossover steps (HGNN beats EGNN) and EGNN divergence."""
+    """Table 3: position-MSE crossover steps and EGNN state divergence."""
     lines = [
         "## Table 3: Crossover and divergence",
         "",
-        "| Size | Median crossover | p95 crossover | EGNN <50% finite | HGNN final finite |",
+        "| Size | Position median crossover | Position p95 crossover | EGNN <50% state finite | HGNN final state finite |",
         "|---|---:|---:|---:|---:|",
     ]
     for size in _collect_sizes(reports):
@@ -138,18 +141,18 @@ def table_crossover(reports: dict[str, dict[int, EvaluationReport]]) -> str:
         if egnn_r.rollout.curves is None or hgnn_r.rollout.curves is None:
             continue
         median_x = _crossover_step(
-            egnn_r.rollout.curves.median_mse,
-            hgnn_r.rollout.curves.median_mse,
+            egnn_r.rollout.curves.position_mse.median,
+            hgnn_r.rollout.curves.position_mse.median,
         )
         p95_x = _crossover_step(
-            egnn_r.rollout.curves.p95_mse,
-            hgnn_r.rollout.curves.p95_mse,
+            egnn_r.rollout.curves.position_mse.p95,
+            hgnn_r.rollout.curves.position_mse.p95,
         )
         # find first step where EGNN finite_fraction drops below 0.5
         egnn_below_50 = next(
             (
                 i
-                for i, f in enumerate(egnn_r.rollout.curves.finite_fraction)
+                for i, f in enumerate(egnn_r.rollout.curves.state_mse.finite_fraction)
                 if f is not None and f < 0.5
             ),
             None,
@@ -158,7 +161,7 @@ def table_crossover(reports: dict[str, dict[int, EvaluationReport]]) -> str:
             f"| {size} | {median_x if median_x is not None else 'never'} | "
             f"{p95_x if p95_x is not None else 'never'} | "
             f"{egnn_below_50 if egnn_below_50 is not None else 'never'} | "
-            f"{_fmt(hgnn_r.rollout.finite_final_fraction)} |"
+            f"{_fmt(hgnn_r.rollout.state_final_finite_fraction)} |"
         )
     return "\n".join(lines)
 

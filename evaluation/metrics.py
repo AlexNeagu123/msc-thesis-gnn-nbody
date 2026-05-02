@@ -15,7 +15,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
 from data.dataset import NBodyDataset
-from evaluation._types import RolloutMSE
+from evaluation._types import RolloutMetricSeries, RolloutMSE, SingleStepMetrics
 
 
 def compute_energy(
@@ -81,26 +81,36 @@ def compute_single_step_metrics(
     model: nn.Module,
     test_path: str,
     device: torch.device,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+) -> SingleStepMetrics:
     """Compute per-sample single-step losses and minimum pairwise distances."""
     test_set = NBodyDataset(test_path)
     loader = DataLoader(test_set, batch_size=256, shuffle=False)
 
-    sample_losses = []
+    state_losses = []
+    position_losses = []
+    velocity_losses = []
     with torch.no_grad():
         for inputs, targets in loader:
             inputs = inputs.to(device)
             preds = model(inputs)
-            diff = (preds.cpu() - targets) ** 2
-            per_sample = diff[..., :4].mean(dim=(1, 2))
-            sample_losses.append(per_sample)
+            squared_error = (preds.cpu() - targets) ** 2
+            state_losses.append(squared_error[..., :4].mean(dim=(1, 2)))
+            position_losses.append(squared_error[..., :2].mean(dim=(1, 2)))
+            velocity_losses.append(squared_error[..., 2:4].mean(dim=(1, 2)))
 
-    sample_losses = torch.cat(sample_losses).numpy()
+    state_mse = torch.cat(state_losses).numpy()
+    position_mse = torch.cat(position_losses).numpy()
+    velocity_mse = torch.cat(velocity_losses).numpy()
 
     positions = test_set.inputs.numpy()[..., :2]
     min_distances = min_pairwise_distances(positions)
 
-    return sample_losses, min_distances
+    return SingleStepMetrics(
+        state_mse=state_mse,
+        position_mse=position_mse,
+        velocity_mse=velocity_mse,
+        min_pairwise_distance=min_distances,
+    )
 
 
 def min_pairwise_distances(positions: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
@@ -121,12 +131,20 @@ def compute_rollout_mse(
     predicted: npt.NDArray[np.floating],
 ) -> RolloutMSE:
     """Compute rollout MSE while preserving non-finite divergence."""
-    diff_state = predicted[..., :4] - test_traj[..., :4]
+    return RolloutMSE(
+        state=_rollout_metric_series(predicted[..., :4] - test_traj[..., :4]),
+        position=_rollout_metric_series(predicted[..., :2] - test_traj[..., :2]),
+        velocity=_rollout_metric_series(predicted[..., 2:4] - test_traj[..., 2:4]),
+    )
+
+
+def _rollout_metric_series(diff: npt.NDArray[np.floating]) -> RolloutMetricSeries:
+    """Compute per-trajectory and aggregate MSE for one rollout state slice."""
     with np.errstate(over="ignore", invalid="ignore"):
-        per_trajectory = (diff_state**2).mean(axis=(2, 3))
+        per_trajectory = (diff**2).mean(axis=(2, 3))
 
     finite = np.where(np.isfinite(per_trajectory), per_trajectory, np.nan)
-    return RolloutMSE(
+    return RolloutMetricSeries(
         per_trajectory=per_trajectory,
         mean=np.nanmean(finite, axis=0),
         median=np.nanmedian(finite, axis=0),
