@@ -140,8 +140,8 @@ class EvaluationMetadata:
     """Provenance and dataset shape."""
 
     model_name: str
-    checkpoint_path: str
-    config_path: str
+    checkpoint_path: str | None
+    config_path: str | None
     test_path: str
     device: str
     checkpoint_epoch: int | None

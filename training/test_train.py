@@ -287,3 +287,101 @@ training:
     assert cfg.training.epochs == 10
     assert cfg.scheduler.enabled is False  # default
     assert cfg.checkpointing.enabled is False  # default
+
+
+def test_multi_step_defaults_when_missing(tmp_path: Path) -> None:
+    """A YAML without multi_step_* fields defaults to one-step training."""
+    yaml_content = """
+model:
+  name: egnn
+  hidden_dim: 64
+  n_layers: 4
+data:
+  train_path: train.h5
+  val_path: val.h5
+  dt: 0.05
+training:
+  epochs: 1
+  batch_size: 8
+  lr: 0.001
+  weight_decay: 0.0
+"""
+    path = tmp_path / "no_multistep.yaml"
+    path.write_text(yaml_content)
+
+    cfg = load_config(str(path))
+    assert cfg.training.multi_step_horizon == 1
+    assert cfg.training.multi_step_gamma == 1.0
+
+
+def test_multi_step_fields_parsed_when_present(tmp_path: Path) -> None:
+    """Explicit multi_step_horizon and multi_step_gamma load into TrainingParams."""
+    yaml_content = """
+model:
+  name: egnn
+  hidden_dim: 64
+  n_layers: 4
+data:
+  train_path: train.h5
+  val_path: val.h5
+  dt: 0.05
+training:
+  epochs: 1
+  batch_size: 8
+  lr: 0.001
+  weight_decay: 0.0
+  multi_step_horizon: 5
+  multi_step_gamma: 0.9
+"""
+    path = tmp_path / "multistep.yaml"
+    path.write_text(yaml_content)
+
+    cfg = load_config(str(path))
+    assert cfg.training.multi_step_horizon == 5
+    assert cfg.training.multi_step_gamma == pytest.approx(0.9)
+
+
+def test_trainer_uses_nbody_dataset_for_horizon_one(make_cfg: TrainConfig) -> None:
+    """horizon=1 keeps the existing one-step NBodyDataset path."""
+    from data.dataset import NBodyDataset
+
+    assert make_cfg.training.multi_step_horizon == 1
+    trainer = Trainer(make_cfg, model=DummyModel())
+
+    assert isinstance(trainer.train_loader.dataset, NBodyDataset)
+    assert isinstance(trainer.val_loader.dataset, NBodyDataset)
+
+
+def test_trainer_uses_window_dataset_for_horizon_above_one(make_cfg: TrainConfig) -> None:
+    """horizon>1 swaps in TrajectoryWindowDataset on both train and val loaders."""
+    from dataclasses import replace
+
+    from data.dataset import TrajectoryWindowDataset
+
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, multi_step_horizon=3),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+
+    train_set = trainer.train_loader.dataset
+    val_set = trainer.val_loader.dataset
+    assert isinstance(train_set, TrajectoryWindowDataset)
+    assert isinstance(val_set, TrajectoryWindowDataset)
+    assert train_set.horizon == 3
+    assert val_set.horizon == 3
+
+
+def test_trainer_rejects_hgnn_with_multi_step(make_cfg: TrainConfig) -> None:
+    """HGNN with horizon>1 raises before any model or data setup runs."""
+    from dataclasses import replace
+
+    cfg = replace(
+        make_cfg,
+        model=replace(make_cfg.model, name="hgnn"),
+        training=replace(make_cfg.training, multi_step_horizon=4),
+    )
+
+    with pytest.raises(ValueError, match="multi_step_horizon > 1 is not supported for HGNN"):
+        Trainer(cfg, model=DummyModel())

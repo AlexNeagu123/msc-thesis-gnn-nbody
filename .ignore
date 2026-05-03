@@ -1,5 +1,6 @@
-# Exceptions read by ripgrep / fd / Telescope only — git still respects .gitignore.
+# Read by ripgrep / fd / Telescope only -- git still respects .gitignore.
 # Re-include directories that are gitignored but useful in fuzzy-find / live-grep.
 
 !runs/
 !evaluation/runs/
+!results/evaluation/

@@ -37,6 +37,8 @@ class TrainingParams:
     noise_factor: float = 0.0
     seed: int = 42
     device: str = "auto"
+    multi_step_horizon: int = 1
+    multi_step_gamma: float = 1.0
 
 
 @dataclass

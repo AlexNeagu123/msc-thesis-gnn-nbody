@@ -17,11 +17,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torchinfo import summary
 from tqdm import tqdm
 
-from data.dataset import NBodyDataset
+from data.dataset import NBodyDataset, TrajectoryWindowDataset
 from models.egnn import EGNN
 from models.hgnn import HGNN
 from training._io import (
@@ -74,6 +74,15 @@ class Trainer:
 
     def __init__(self, cfg: TrainConfig, model: nn.Module | None = None) -> None:
         """Set up all training components from config."""
+        horizon = cfg.training.multi_step_horizon
+        if cfg.model.name == "hgnn" and horizon > 1:
+            msg = (
+                "multi_step_horizon > 1 is not supported for HGNN: "
+                "rollout training compounds with HGNN's internal autograd "
+                "and is too expensive to run by accident."
+            )
+            raise ValueError(msg)
+
         self.cfg = cfg
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -144,8 +153,9 @@ class Trainer:
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
         """Create data loaders and training-set normalization stats."""
         cfg = self.cfg
-        train_set = NBodyDataset(cfg.data.train_path, cfg.data.n_train_trajectories)
-        val_set = NBodyDataset(cfg.data.val_path)
+        horizon = cfg.training.multi_step_horizon
+        train_set = self._build_dataset(cfg.data.train_path, horizon, cfg.data.n_train_trajectories)
+        val_set = self._build_dataset(cfg.data.val_path, horizon)
 
         self.pos_std = float(train_set.inputs[..., :2].std())
         self.vel_std = float(train_set.inputs[..., 2:4].std())
@@ -343,6 +353,17 @@ class Trainer:
         )
 
     # --- static helpers ---
+
+    @staticmethod
+    def _build_dataset(
+        path: str,
+        horizon: int,
+        n_trajectories: int | None = None,
+    ) -> Dataset:
+        """Pick the right dataset for the configured rollout horizon."""
+        if horizon == 1:
+            return NBodyDataset(path, n_trajectories)
+        return TrajectoryWindowDataset(path, horizon=horizon, n_trajectories=n_trajectories)
 
     @staticmethod
     def _resolve_device(device_cfg: str) -> torch.device:

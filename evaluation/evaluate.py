@@ -72,22 +72,32 @@ def evaluate_checkpoint(
     predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
 
-    steps = _summary_steps(test_traj.shape[1] - 1)
-    report = _build_report(
-        cfg=cfg,
-        checkpoint=checkpoint,
-        checkpoint_path=checkpoint_path,
-        config_path=config_path,
-        test_path=test_path,
-        device=torch_device,
+    n_traj, n_frames, n_particles, _state_dim = test_traj.shape
+    metadata = EvaluationMetadata(
+        model_name=cfg.model.name,
+        checkpoint_path=str(checkpoint_path),
+        config_path=str(config_path),
+        test_path=str(test_path),
+        device=str(torch_device),
+        checkpoint_epoch=checkpoint.epoch,
+        checkpoint_val_loss=checkpoint.val_loss,
+        run_id=checkpoint.run_id or checkpoint_path.parent.name,
+        git_commit=checkpoint.git_commit,
         pos_std=pos_std,
         vel_std=vel_std,
+        n_trajectories=n_traj,
+        n_frames=n_frames,
+        n_transitions=n_frames - 1,
+        n_particles=n_particles,
+    )
+    report = build_evaluation_report(
+        model=model,
         test_traj=test_traj,
         predicted=predicted,
         single_step_metrics=single_step_metrics,
         rollout_mse=rollout_mse,
-        steps=steps,
-        model=model,
+        metadata=metadata,
+        device=torch_device,
     )
 
     target_dir = _output_dir(output_dir, cfg.model.name, checkpoint_path)
@@ -99,44 +109,20 @@ def evaluate_checkpoint(
     return report
 
 
-def _build_report(
+def build_evaluation_report(
     *,
-    cfg: TrainConfig,
-    checkpoint: Checkpoint,
-    checkpoint_path: Path,
-    config_path: Path,
-    test_path: Path,
-    device: torch.device,
-    pos_std: float,
-    vel_std: float,
+    model: nn.Module,
     test_traj: np.ndarray,
     predicted: np.ndarray,
     single_step_metrics: SingleStepMetrics,
     rollout_mse: RolloutMSE,
-    steps: list[int],
-    model: nn.Module,
+    metadata: EvaluationMetadata,
+    device: torch.device,
+    steps: list[int] | None = None,
 ) -> EvaluationReport:
-    """Build the typed evaluation report."""
-    n_traj, n_frames, n_particles, _state_dim = test_traj.shape
-    n_transitions = n_frames - 1
-
-    metadata = EvaluationMetadata(
-        model_name=cfg.model.name,
-        checkpoint_path=str(checkpoint_path),
-        config_path=str(config_path),
-        test_path=str(test_path),
-        device=str(device),
-        checkpoint_epoch=checkpoint.epoch,
-        checkpoint_val_loss=checkpoint.val_loss,
-        run_id=checkpoint.run_id or checkpoint_path.parent.name,
-        git_commit=checkpoint.git_commit,
-        pos_std=pos_std,
-        vel_std=vel_std,
-        n_trajectories=n_traj,
-        n_frames=n_frames,
-        n_transitions=n_transitions,
-        n_particles=n_particles,
-    )
+    """Build the typed evaluation report from precomputed metrics and caller metadata."""
+    if steps is None:
+        steps = _summary_steps(test_traj.shape[1] - 1)
 
     single_step = SingleStepReport(
         state_mse=_summarize_mse(single_step_metrics.state_mse),
