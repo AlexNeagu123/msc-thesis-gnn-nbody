@@ -1,0 +1,36 @@
+model:
+  name: egnn
+  hidden_dim: 64
+  n_layers: 4
+  summary: true
+
+data:
+  train_path: data/output/scaling/train.h5
+  val_path: data/output/scaling/val.h5
+  dt: 0.05
+
+training:
+  epochs: 80
+  batch_size: 128
+  lr: 1.0e-5
+  weight_decay: 1.0e-5
+  loss: mse
+  noise_factor: 0.03
+  multi_step_horizon: 3
+  multi_step_gamma: 0.7
+  seed: 42
+  device: auto
+
+scheduler:
+  enabled: true
+  patience: 50
+  factor: 0.5
+  min_lr: 1.0e-6
+
+checkpointing:
+  enabled: true
+  dir: checkpoints/egnn_multistep_finetune/
+
+logging:
+  enabled: true
+  dir: logs/egnn_multistep_finetune/

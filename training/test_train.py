@@ -1,5 +1,6 @@
 """Tests for training/train.py."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import h5py
@@ -354,8 +355,6 @@ def test_trainer_uses_nbody_dataset_for_horizon_one(make_cfg: TrainConfig) -> No
 
 def test_trainer_uses_window_dataset_for_horizon_above_one(make_cfg: TrainConfig) -> None:
     """horizon>1 swaps in TrajectoryWindowDataset on both train and val loaders."""
-    from dataclasses import replace
-
     from data.dataset import TrajectoryWindowDataset
 
     cfg = replace(
@@ -375,8 +374,6 @@ def test_trainer_uses_window_dataset_for_horizon_above_one(make_cfg: TrainConfig
 
 def test_trainer_rejects_hgnn_with_multi_step(make_cfg: TrainConfig) -> None:
     """HGNN with horizon>1 raises before any model or data setup runs."""
-    from dataclasses import replace
-
     cfg = replace(
         make_cfg,
         model=replace(make_cfg.model, name="hgnn"),
@@ -385,3 +382,270 @@ def test_trainer_rejects_hgnn_with_multi_step(make_cfg: TrainConfig) -> None:
 
     with pytest.raises(ValueError, match="multi_step_horizon > 1 is not supported for HGNN"):
         Trainer(cfg, model=DummyModel())
+
+
+class _CountingModel(nn.Module):
+    """DummyModel variant that counts forward calls per instance."""
+
+    def __init__(self) -> None:
+        """Initialize with a single linear layer and a counter."""
+        super().__init__()
+        self.net = nn.Linear(5, 5)
+        self.call_count = 0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Count and forward."""
+        self.call_count += 1
+        return self.net(x)
+
+
+class _IdentityModel(nn.Module):
+    """Model that returns inputs unchanged; useful for fixed-loss assertions."""
+
+    def __init__(self) -> None:
+        """Hold a single unused parameter so the optimizer accepts the model."""
+        super().__init__()
+        self._unused = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return input unchanged."""
+        return x
+
+
+def test_multi_step_trains_end_to_end(make_cfg: TrainConfig) -> None:
+    """horizon=3 multi-step path completes a full training run with finite loss."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, multi_step_horizon=3),
+    )
+
+    result = train(cfg, model=DummyModel())
+
+    assert isinstance(result, TrainResult)
+    assert len(result.train_history) == cfg.training.epochs
+    assert result.final_train_loss < float("inf")
+    assert all(np.isfinite(x) for x in result.train_history)
+    assert all(np.isfinite(x) for x in result.val_history)
+
+
+def test_multi_step_calls_model_horizon_times_per_batch(make_cfg: TrainConfig) -> None:
+    """Each batch in multi-step mode triggers `horizon` forward passes."""
+    horizon = 3
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, multi_step_horizon=horizon, epochs=1),
+    )
+    model = _CountingModel()
+
+    trainer = Trainer(cfg, model=model)
+    n_train = len(trainer.train_loader)
+    n_val = len(trainer.val_loader)
+
+    trainer.run()
+
+    expected = horizon * (n_train + n_val)
+    assert model.call_count == expected
+
+
+def test_multi_step_gradients_flow_through_all_unrolls(make_cfg: TrainConfig) -> None:
+    """One epoch in multi-step mode leaves non-zero gradients on every parameter."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, multi_step_horizon=3, epochs=1),
+    )
+    model = DummyModel()
+
+    train(cfg, model=model)
+
+    for name, param in model.named_parameters():
+        assert param.grad is not None, f"no gradient for {name}"
+        assert param.grad.abs().sum() > 0, f"zero gradient for {name}"
+
+
+def test_multi_step_loss_is_weighted_mean(make_cfg: TrainConfig) -> None:
+    """Loss equals sum_k gamma^k * MSE_k / sum_k gamma^k on real batch data."""
+    horizon = 3
+    gamma = 0.5
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            multi_step_horizon=horizon,
+            multi_step_gamma=gamma,
+            noise_factor=0.0,
+            epochs=1,
+        ),
+    )
+
+    trainer = Trainer(cfg, model=_IdentityModel())
+    inputs, targets = next(iter(trainer.train_loader))
+    inputs = inputs.to(trainer.device)
+    targets = targets.to(trainer.device)
+
+    _, loss = trainer._multi_step_rollout_loss(inputs, targets)
+
+    loss_fn = nn.MSELoss()
+    weighted_sum = sum(
+        (gamma**k) * loss_fn(inputs[..., :4], targets[:, k, ..., :4]) for k in range(horizon)
+    )
+    weight_sum = sum(gamma**k for k in range(horizon))
+    expected = weighted_sum / weight_sum
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+
+def test_multi_step_loss_matches_one_step_scale_at_gamma_one(make_cfg: TrainConfig) -> None:
+    """gamma=1 reduces the multi-step loss to the per-step MSE mean."""
+    horizon = 4
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            multi_step_horizon=horizon,
+            multi_step_gamma=1.0,
+            noise_factor=0.0,
+            epochs=1,
+        ),
+    )
+
+    trainer = Trainer(cfg, model=_IdentityModel())
+    inputs, targets = next(iter(trainer.train_loader))
+    inputs = inputs.to(trainer.device)
+    targets = targets.to(trainer.device)
+
+    _, loss = trainer._multi_step_rollout_loss(inputs, targets)
+
+    loss_fn = nn.MSELoss()
+    per_step = [loss_fn(inputs[..., :4], targets[:, k, ..., :4]) for k in range(horizon)]
+    expected_mean = torch.stack(per_step).mean()
+    assert torch.allclose(loss, expected_mean, atol=1e-6)
+
+
+def test_multi_step_noise_applied_once_per_batch(make_cfg: TrainConfig) -> None:
+    """apply_noise fires exactly once per batch even when horizon > 1."""
+    horizon = 3
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            multi_step_horizon=horizon,
+            noise_factor=0.05,
+            epochs=1,
+        ),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+
+    call_count = 0
+    original = trainer.apply_noise
+
+    def spy(inputs: torch.Tensor) -> torch.Tensor:
+        nonlocal call_count
+        call_count += 1
+        return original(inputs)
+
+    trainer.apply_noise = spy
+    n_train_batches = len(trainer.train_loader)
+
+    trainer.run()
+
+    # noise is only applied during training, not validation
+    assert call_count == n_train_batches
+
+
+def test_multi_step_diagnostics_locate_window_sample(make_cfg: TrainConfig) -> None:
+    """Diagnostics can locate first-step targets from TrajectoryWindowDataset."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, multi_step_horizon=3),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    dataset = trainer.train_loader.dataset
+
+    _inputs, targets = dataset[0]
+    location = trainer.diagnostics._locate_sample(targets[0])
+
+    assert location == "trajectory 0, step 0"
+
+
+def _save_dummy_checkpoint(
+    path: Path,
+    *,
+    state_dict: dict[str, torch.Tensor],
+    model_name: str | None,
+) -> None:
+    """Write a Checkpoint dataclass to disk for init-checkpoint tests."""
+    ckpt = Checkpoint(
+        epoch=42,
+        model=state_dict,
+        optimizer={"state": {"momentum_buffer": torch.ones(5)}},
+        val_loss=0.123,
+        model_name=model_name,
+        run_id="prior_run",
+        pos_std=1.0,
+        vel_std=1.0,
+    )
+    torch.save(ckpt, path)
+
+
+def test_init_checkpoint_loads_model_weights(make_cfg: TrainConfig, tmp_path: Path) -> None:
+    """Init checkpoint replaces fresh model weights with the saved ones."""
+    saved_model = DummyModel()
+    for p in saved_model.parameters():
+        p.data.fill_(7.0)
+    ckpt_path = tmp_path / "init.pt"
+    _save_dummy_checkpoint(
+        ckpt_path,
+        state_dict=saved_model.state_dict(),
+        model_name=make_cfg.model.name,
+    )
+
+    trainer = Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
+
+    for name, param in trainer.model.named_parameters():
+        assert torch.equal(param.detach().cpu(), saved_model.state_dict()[name]), (
+            f"mismatch on {name}"
+        )
+
+
+def test_init_checkpoint_optimizer_is_fresh(make_cfg: TrainConfig, tmp_path: Path) -> None:
+    """Trainer never inherits the saved optimizer state when init_checkpoint is set."""
+    saved_model = DummyModel()
+    ckpt_path = tmp_path / "init.pt"
+    _save_dummy_checkpoint(
+        ckpt_path,
+        state_dict=saved_model.state_dict(),
+        model_name=make_cfg.model.name,
+    )
+
+    trainer = Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
+
+    # AdamW starts with empty per-parameter state until step() runs once
+    assert len(trainer.optimizer.state) == 0
+
+
+def test_init_checkpoint_rejects_model_mismatch(make_cfg: TrainConfig, tmp_path: Path) -> None:
+    """A checkpoint with a different model_name raises before training starts."""
+    ckpt_path = tmp_path / "init.pt"
+    _save_dummy_checkpoint(
+        ckpt_path,
+        state_dict=DummyModel().state_dict(),
+        model_name="hgnn",
+    )
+
+    with pytest.raises(ValueError, match="trained for model 'hgnn'"):
+        Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
+
+
+def test_init_checkpoint_accepts_legacy_no_model_name(
+    make_cfg: TrainConfig, tmp_path: Path
+) -> None:
+    """A legacy checkpoint with model_name=None loads without error."""
+    ckpt_path = tmp_path / "init.pt"
+    _save_dummy_checkpoint(
+        ckpt_path,
+        state_dict=DummyModel().state_dict(),
+        model_name=None,
+    )
+
+    trainer = Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
+    assert trainer.model is not None

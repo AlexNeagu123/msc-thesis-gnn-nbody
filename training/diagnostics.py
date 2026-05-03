@@ -132,15 +132,24 @@ class TrainingDiagnostics:
         if self.dataset is None:
             return "unknown (no dataset reference)"
 
-        matches = (self.dataset.targets == target.cpu()).all(dim=(1, 2))
+        dataset_targets = self.dataset.targets
+        target_cpu = target.cpu()
+        if dataset_targets.ndim == 4:
+            dataset_targets = dataset_targets[:, 0]
+
+        matches = (dataset_targets == target_cpu).all(dim=(1, 2))
         idxs = matches.nonzero(as_tuple=True)[0]
 
         if len(idxs) == 0:
             return "unknown (no match)"
 
         flat_idx = idxs[0].item()
-        traj_idx = flat_idx // self.dataset.steps_per_traj
-        step_idx = flat_idx % self.dataset.steps_per_traj
+        if hasattr(self.dataset, "steps_per_traj"):
+            samples_per_traj = self.dataset.steps_per_traj
+        else:
+            samples_per_traj = self.dataset.windows_per_traj
+        traj_idx = flat_idx // samples_per_traj
+        step_idx = flat_idx % samples_per_traj
 
         return f"trajectory {traj_idx}, step {step_idx}"
 

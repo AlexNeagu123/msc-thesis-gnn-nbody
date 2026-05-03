@@ -27,6 +27,7 @@ from models.hgnn import HGNN
 from training._io import (
     append_metrics,
     init_metrics_csv,
+    load_checkpoint,
     load_config,
     save_checkpoint,
 )
@@ -72,8 +73,22 @@ def build_model(
 class Trainer:
     """Orchestrate model training, validation, checkpointing, and logging."""
 
-    def __init__(self, cfg: TrainConfig, model: nn.Module | None = None) -> None:
-        """Set up all training components from config."""
+    def __init__(
+        self,
+        cfg: TrainConfig,
+        model: nn.Module | None = None,
+        init_checkpoint: str | Path | None = None,
+    ) -> None:
+        """Set up all training components from config.
+
+        Args:
+            cfg: training configuration.
+            model: optional pre-built model (dependency-injection for tests).
+            init_checkpoint: optional path to a checkpoint whose model weights
+                should be loaded as the starting point for a fresh run. The
+                optimizer, scheduler, run_id, logs, and checkpoint dir are NOT
+                inherited; they all start fresh from the current config.
+        """
         horizon = cfg.training.multi_step_horizon
         if cfg.model.name == "hgnn" and horizon > 1:
             msg = (
@@ -97,6 +112,10 @@ class Trainer:
 
         self.train_loader, self.val_loader = self._setup_data()
         self.model = model.to(self.device) if model is not None else self._setup_model()
+
+        if init_checkpoint is not None:
+            self._load_init_checkpoint(init_checkpoint)
+
         self.loss_fn = self._build_loss_fn(cfg.training.loss)
         self.optimizer, self.scheduler = self._setup_optimizer()
         self.ckpt_dir = self._setup_checkpointing()
@@ -201,6 +220,35 @@ class Trainer:
 
         return model
 
+    def _load_init_checkpoint(self, path: str | Path) -> None:
+        """Load model weights only from a previous checkpoint; everything else stays fresh.
+
+        The optimizer, scheduler, epoch counter, run_id, logging dir, and
+        checkpoint dir are all built from the current config. Only the
+        model state_dict is taken from the checkpoint.
+
+        A checkpoint with a non-None `model_name` must match `cfg.model.name`.
+        Legacy checkpoints with `model_name=None` are accepted as-is.
+        """
+        path = Path(path)
+        checkpoint = load_checkpoint(path, self.device)
+
+        if checkpoint.model_name is not None and checkpoint.model_name != self.cfg.model.name:
+            msg = (
+                f"init checkpoint at {path} was trained for model "
+                f"{checkpoint.model_name!r}, but current config is "
+                f"{self.cfg.model.name!r}"
+            )
+            raise ValueError(msg)
+
+        self.model.load_state_dict(checkpoint.model)
+        logger.info(
+            "init checkpoint: loaded weights from %s (epoch %d, val_loss %.6f)",
+            path,
+            checkpoint.epoch,
+            checkpoint.val_loss,
+        )
+
     def _setup_optimizer(
         self,
     ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None]:
@@ -280,8 +328,7 @@ class Trainer:
                 if training and self.cfg.training.noise_factor > 0:
                     inputs = self.apply_noise(inputs)
 
-                preds = self.model(inputs)
-                loss = self.loss_fn(preds, targets)
+                preds, loss, diag_targets = self._compute_loss(inputs, targets)
 
                 if training:
                     self.optimizer.zero_grad()
@@ -296,7 +343,7 @@ class Trainer:
                 if training:
                     self.diagnostics.check_batch(
                         inputs,
-                        targets,
+                        diag_targets,
                         preds.detach(),
                         batch_loss,
                         n_batches,
@@ -307,6 +354,67 @@ class Trainer:
                     batches.set_postfix(loss=f"{total_loss / n_batches:.6f}")
 
         return total_loss / n_batches
+
+    def _compute_loss(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Dispatch to the configured loss path, returning (preds, loss, diag_targets).
+
+        `diag_targets` is the single-step target tensor (B, N, 5) suitable for
+        feeding to TrainingDiagnostics, regardless of which path runs.
+        """
+        if self.cfg.training.multi_step_horizon == 1:
+            preds, loss = self._one_step_loss(inputs, targets)
+            return preds, loss, targets
+        preds, loss = self._multi_step_rollout_loss(inputs, targets)
+        return preds, loss, targets[:, 0]
+
+    def _one_step_loss(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """One forward pass; full-state MSE matching the legacy training path."""
+        preds = self.model(inputs)
+        loss = self.loss_fn(preds, targets)
+        return preds, loss
+
+    def _multi_step_rollout_loss(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Unroll the model `horizon` steps; weighted-mean MSE on (x, y, vx, vy).
+
+        Loss is `sum_k gamma^k * MSE_k / sum_k gamma^k`, keeping the value on
+        the same scale as one-step MSE so val_loss, scheduler thresholds, and
+        gradient magnitudes stay comparable across horizon settings.
+
+        Gradients flow through every rollout step; intermediate states are not
+        detached. Only the initial input is noised (by `_run_epoch`); every
+        subsequent state is the model's own prediction. Targets stay clean.
+
+        Mass is excluded from the loss because the model passes it through
+        unchanged at every step and the trajectory keeps it constant.
+        """
+        horizon = self.cfg.training.multi_step_horizon
+        gamma = self.cfg.training.multi_step_gamma
+
+        state = self.model(inputs)
+        first_preds = state
+        weighted_loss = self.loss_fn(state[..., :4], targets[:, 0, ..., :4])
+        weight_sum = 1.0
+
+        for k in range(1, horizon):
+            state = self.model(state)
+            step_loss = self.loss_fn(state[..., :4], targets[:, k, ..., :4])
+            weight = gamma**k
+            weighted_loss = weighted_loss + weight * step_loss
+            weight_sum += weight
+
+        return first_preds, weighted_loss / weight_sum
 
     def _checkpoint(self, epoch: int, val_loss: float, is_best: bool) -> None:
         """Save model checkpoint if enabled."""
@@ -412,9 +520,13 @@ class Trainer:
         return result.stdout.strip()
 
 
-def train(cfg: TrainConfig, model: nn.Module | None = None) -> TrainResult:
+def train(
+    cfg: TrainConfig,
+    model: nn.Module | None = None,
+    init_checkpoint: str | Path | None = None,
+) -> TrainResult:
     """Run Trainer with a compact function call."""
-    return Trainer(cfg, model=model).run()
+    return Trainer(cfg, model=model, init_checkpoint=init_checkpoint).run()
 
 
 if __name__ == "__main__":
@@ -431,10 +543,19 @@ if __name__ == "__main__":
         default=None,
         help="Override n_train_trajectories from the config (data-scaling runs).",
     )
+    parser.add_argument(
+        "--init-checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Path to a checkpoint whose model weights initialise this run. "
+            "Optimizer, scheduler, run_id, logs, and checkpoints all start fresh."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     if args.n_train is not None:
         config = replace(config, data=replace(config.data, n_train_trajectories=args.n_train))
-    results = train(config)
+    results = train(config, init_checkpoint=args.init_checkpoint)
     logger.info("results: %s", results)
