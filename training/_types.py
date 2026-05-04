@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+import numpy.typing as npt
+
 
 @dataclass
 class ModelConfig:
@@ -116,6 +119,22 @@ class TrainResult:
     best_epoch: int
     train_history: list[float] = field(default_factory=list)
     val_history: list[float] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RolloutScore:
+    """Baseline-normalized rollout score on the validation set.
+
+    Lower is better. score < 0 means the model beats the baseline envelope
+    on average across the rollout horizon (geometric mean of ratios < 1).
+    """
+
+    score: float
+    ratios: npt.NDArray[np.floating]
+    dominance_horizon: int
+    fraction_beating_baseline: float
+    final_ratio: float
+    ratios_at_step: dict[int, float]
 
 
 @dataclass
