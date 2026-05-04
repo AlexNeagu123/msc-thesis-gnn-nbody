@@ -1,7 +1,7 @@
 model:
   name: egnn
-  hidden_dim: 128
-  n_layers: 6
+  hidden_dim: 64
+  n_layers: 4
   summary: true
 
 data:
@@ -10,12 +10,12 @@ data:
   dt: 0.05
 
 training:
-  epochs: 300
+  epochs: 500
   batch_size: 128
-  lr: 2.5e-4
+  lr: 5.0e-4
   weight_decay: 1.0e-5
   loss: mse
-  noise_factor: 0.05
+  noise_factor: 0.1
   seed: 42
   device: auto
 
