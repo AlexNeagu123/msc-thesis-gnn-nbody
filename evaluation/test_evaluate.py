@@ -14,6 +14,7 @@ from evaluation.evaluate import (
     evaluate_checkpoint,
 )
 from models.egnn import EGNN
+from models.egnn_accel import EGNNAccel
 from models.hgnn import HGNN
 from training._types import (
     Checkpoint,
@@ -211,3 +212,56 @@ def test_evaluate_hgnn_reports_learned_hamiltonian(tmp_path: Path) -> None:
     )
 
     assert report.energy.learned_hamiltonian is not None
+
+
+def test_evaluate_egnn_accel_writes_artifacts(tmp_path: Path) -> None:
+    """An egnn_accel checkpoint flows through the existing evaluator unchanged."""
+    train_path = tmp_path / "train.h5"
+    val_path = tmp_path / "val.h5"
+    test_path = tmp_path / "test.h5"
+    _write_h5(train_path, n_traj=2, n_steps=4)
+    _write_h5(val_path, n_traj=2, n_steps=4)
+    _write_h5(test_path, n_traj=2, n_steps=4)
+
+    cfg = _cfg(train_path, val_path, "egnn_accel")
+    config_path = tmp_path / "egnn_accel.yaml"
+    _write_config(config_path, cfg)
+
+    model = EGNNAccel(hidden_dim=8, n_layers=1, dt=cfg.data.dt)
+    checkpoint_path = tmp_path / "best.pt"
+    torch.save(
+        Checkpoint(
+            epoch=3,
+            model=model.state_dict(),
+            optimizer={},
+            val_loss=0.07,
+            model_name="egnn_accel",
+        ),
+        checkpoint_path,
+    )
+
+    output_dir = tmp_path / "eval_accel"
+    report = evaluate_checkpoint(
+        cfg,
+        checkpoint_path,
+        config_path=config_path,
+        test_path=test_path,
+        output_dir=output_dir,
+        device="cpu",
+    )
+
+    assert (output_dir / "metrics.json").exists()
+    assert (output_dir / "summary.csv").exists()
+    assert report.metadata.model_name == "egnn_accel"
+    # learned_hamiltonian path is HGNN-only
+    assert report.energy.learned_hamiltonian is None
+
+    data = json.loads((output_dir / "metrics.json").read_text())
+    assert data["metadata"]["model_name"] == "egnn_accel"
+    assert "single_step" in data
+    assert "rollout" in data
+
+    with (output_dir / "summary.csv").open() as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["model_name"] == "egnn_accel"
