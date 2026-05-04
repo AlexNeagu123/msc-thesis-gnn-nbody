@@ -377,16 +377,17 @@ def test_trainer_uses_window_dataset_for_horizon_above_one(make_cfg: TrainConfig
     assert val_set.horizon == 3
 
 
-def test_trainer_rejects_hgnn_with_multi_step(make_cfg: TrainConfig) -> None:
-    """HGNN with horizon>1 raises before any model or data setup runs."""
+def test_trainer_allows_hgnn_with_multi_step_horizon(make_cfg: TrainConfig) -> None:
+    """HGNN with horizon>1 constructs cleanly; curriculum mode owns the schedule."""
     cfg = replace(
         make_cfg,
         model=replace(make_cfg.model, name="hgnn"),
         training=replace(make_cfg.training, multi_step_horizon=4),
     )
 
-    with pytest.raises(ValueError, match="multi_step_horizon > 1 is not supported for HGNN"):
-        Trainer(cfg, model=DummyModel())
+    trainer = Trainer(cfg, model=DummyModel())
+
+    assert trainer.current_horizon == 4
 
 
 class _CountingModel(nn.Module):
@@ -656,6 +657,62 @@ def test_init_checkpoint_accepts_legacy_no_model_name(
     assert trainer.model is not None
 
 
+# --- curriculum schema validation ---
+
+
+def _params(**overrides: object) -> TrainingParams:
+    """Helper for `TrainingParams` calls that need the required fields filled."""
+    base: dict[str, object] = {"batch_size": 8, "lr": 1e-3, "weight_decay": 0.0}
+    base.update(overrides)
+    return TrainingParams(**base)  # type: ignore[arg-type]
+
+
+def test_training_params_rejects_zero_epochs_without_curriculum() -> None:
+    """Single-horizon mode requires epochs > 0; otherwise the dataclass raises."""
+    with pytest.raises(ValueError, match="epochs must be > 0 in single-horizon"):
+        _params()
+
+
+def test_training_params_accepts_curriculum_without_epochs() -> None:
+    """Curriculum mode does not require epochs since the schedule supplies the count."""
+    params = _params(curriculum_horizons=[1, 5], curriculum_epochs=[3, 2])
+    assert params.curriculum_horizons == [1, 5]
+    assert params.curriculum_epochs == [3, 2]
+
+
+def test_training_params_rejects_partial_curriculum() -> None:
+    """Setting only one of the two curriculum fields is ambiguous and rejected."""
+    with pytest.raises(ValueError, match="must both be set or both be None"):
+        _params(epochs=10, curriculum_horizons=[1, 5])
+
+    with pytest.raises(ValueError, match="must both be set or both be None"):
+        _params(epochs=10, curriculum_epochs=[3, 2])
+
+
+def test_training_params_rejects_mismatched_curriculum_lengths() -> None:
+    """Mismatched horizon and epoch lists describe an inconsistent schedule."""
+    with pytest.raises(ValueError, match="must have the same length"):
+        _params(curriculum_horizons=[1, 5, 10], curriculum_epochs=[3, 2])
+
+
+def test_training_params_rejects_empty_curriculum() -> None:
+    """A zero-stage schedule has nothing to run."""
+    with pytest.raises(ValueError, match="must contain at least one stage"):
+        _params(curriculum_horizons=[], curriculum_epochs=[])
+
+
+def test_training_params_rejects_non_positive_horizons() -> None:
+    """Every horizon must be at least 1."""
+    with pytest.raises(ValueError, match="curriculum_horizons entry must be >= 1"):
+        _params(curriculum_horizons=[1, 0, 5], curriculum_epochs=[3, 2, 1])
+
+
+def test_training_params_rejects_non_positive_epochs() -> None:
+    """Every stage must train for at least one epoch."""
+    with pytest.raises(ValueError, match="curriculum_epochs entry must be >= 1"):
+        _params(curriculum_horizons=[1, 5], curriculum_epochs=[3, 0])
+
+
 # --- checkpoint_metric and rollout-score wiring ---
 
 
@@ -846,3 +903,100 @@ def test_checkpoint_val_loss_field_remains_one_step_validation_loss(
     assert math.isfinite(best_ckpt.val_loss)
     # TrainResult.best_val_loss tracks the lowest one-step val MSE seen
     assert math.isfinite(result.best_val_loss)
+
+
+# --- curriculum stage runner ---
+
+
+def _curriculum_cfg(make_cfg: TrainConfig, horizons: list[int], epochs: list[int]) -> TrainConfig:
+    """Build a TrainConfig with a curriculum schedule, leaving epochs/horizon unused."""
+    return replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            curriculum_horizons=horizons,
+            curriculum_epochs=epochs,
+        ),
+    )
+
+
+def test_curriculum_runs_through_two_stages(make_cfg: TrainConfig) -> None:
+    """Two-stage schedule completes; total epochs equal sum of stage epochs."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[2, 2])
+
+    result = train(cfg, model=DummyModel())
+
+    assert len(result.train_history) == 4
+    assert len(result.val_history) == 4
+    assert all(np.isfinite(x) for x in result.train_history)
+
+
+def test_curriculum_rebuilds_loader_when_horizon_changes(make_cfg: TrainConfig) -> None:
+    """Loader dataset class switches from one-step to window when horizon advances."""
+    from data.dataset import NBodyDataset, TrajectoryWindowDataset
+
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
+    trainer = Trainer(cfg, model=DummyModel())
+
+    # initial loader is built for horizon=1 (one-step dataset)
+    assert isinstance(trainer.train_loader.dataset, NBodyDataset)
+    assert trainer.current_horizon == 1
+
+    trainer.run()
+
+    # after running, the trainer is parked on the last stage's horizon and dataset class
+    assert trainer.current_horizon == 3
+    assert isinstance(trainer.train_loader.dataset, TrajectoryWindowDataset)
+    # diagnostics tracks the active dataset, not the stale stage-0 one
+    assert trainer.diagnostics.dataset is trainer.train_loader.dataset
+
+
+def test_curriculum_optimizer_state_persists_across_stages(make_cfg: TrainConfig) -> None:
+    """Adam state survives stage transitions; no implicit reset between horizons."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
+    trainer = Trainer(cfg, model=DummyModel())
+    trainer.run()
+
+    # at least one parameter has accumulated optimizer state (Adam exp_avg / exp_avg_sq)
+    assert len(trainer.optimizer.state) > 0
+    sample_state = next(iter(trainer.optimizer.state.values()))
+    assert "exp_avg" in sample_state
+    assert "exp_avg_sq" in sample_state
+
+
+def test_hgnn_curriculum_smoke(make_cfg: TrainConfig) -> None:
+    """HGNN trains through a tiny 1->2 curriculum without the old guard tripping.
+
+    Uses the real HGNN module (not DummyModel) so this exercises the autograd
+    path the prior unconditional rejection used to block.
+    """
+    from models.hgnn import HGNN
+
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 2], epochs=[1, 1])
+    cfg = replace(cfg, model=replace(cfg.model, name="hgnn", hidden_dim=8, n_layers=1))
+
+    model = HGNN(hidden_dim=8, n_layers=1, dt=cfg.data.dt)
+    result = train(cfg, model=model)
+
+    assert isinstance(result, TrainResult)
+    assert len(result.train_history) == 2
+    assert all(np.isfinite(x) for x in result.train_history)
+
+
+def test_curriculum_best_checkpoint_indexes_globally(make_cfg: TrainConfig) -> None:
+    """Best-checkpoint epoch is the global step counter across stages, not per-stage."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[2, 2])
+    cfg = replace(
+        cfg,
+        training=replace(cfg.training, checkpoint_metric="rollout_score"),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    # epoch 3 (first epoch of stage 2) wins on rollout_score
+    trainer.rollout_evaluator = _ScriptedRolloutEvaluator(scores=[0.7, 0.6, 0.1, 0.5])
+    trainer.run()
+
+    run_dir = _find_run_dir(cfg.checkpointing.dir)
+    best_ckpt = torch.load(run_dir / "best.pt", weights_only=False)
+
+    assert best_ckpt.epoch == 3
+    assert best_ckpt.selected_score == pytest.approx(0.1)

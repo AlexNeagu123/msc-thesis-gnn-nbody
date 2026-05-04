@@ -30,12 +30,20 @@ class DataConfig:
 
 @dataclass
 class TrainingParams:
-    """Core training hyperparameters."""
+    """Core training hyperparameters.
 
-    epochs: int
+    Two run shapes are supported:
+        - Single horizon: `epochs` and `multi_step_horizon` define one
+          training stage of the given length.
+        - Curriculum: `curriculum_horizons` and `curriculum_epochs` define a
+          sequence of stages that share the same model, optimizer, and
+          scheduler; `epochs` and `multi_step_horizon` are ignored.
+    """
+
     batch_size: int
     lr: float
     weight_decay: float
+    epochs: int = 0
     loss: str = "mse"
     noise_factor: float = 0.0
     seed: int = 42
@@ -43,6 +51,40 @@ class TrainingParams:
     multi_step_horizon: int = 1
     multi_step_gamma: float = 1.0
     checkpoint_metric: str = "val_loss"
+    curriculum_horizons: list[int] | None = None
+    curriculum_epochs: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate single-horizon vs curriculum field combinations."""
+        horizons = self.curriculum_horizons
+        epochs_list = self.curriculum_epochs
+
+        if (horizons is None) != (epochs_list is None):
+            msg = "curriculum_horizons and curriculum_epochs must both be set or both be None"
+            raise ValueError(msg)
+
+        if horizons is None:
+            if self.epochs <= 0:
+                msg = "epochs must be > 0 in single-horizon mode (no curriculum configured)"
+                raise ValueError(msg)
+            return
+
+        # curriculum mode: validate the two lists describe a consistent schedule
+        if len(horizons) != len(epochs_list):  # type: ignore[arg-type]
+            msg = (
+                f"curriculum_horizons ({len(horizons)}) and curriculum_epochs "
+                f"({len(epochs_list)}) must have the same length"  # type: ignore[arg-type]
+            )
+            raise ValueError(msg)
+        if len(horizons) == 0:
+            msg = "curriculum schedule must contain at least one stage"
+            raise ValueError(msg)
+        if any(h < 1 for h in horizons):
+            msg = f"every curriculum_horizons entry must be >= 1, got {horizons}"
+            raise ValueError(msg)
+        if any(e < 1 for e in epochs_list):  # type: ignore[union-attr]
+            msg = f"every curriculum_epochs entry must be >= 1, got {epochs_list}"
+            raise ValueError(msg)
 
 
 @dataclass

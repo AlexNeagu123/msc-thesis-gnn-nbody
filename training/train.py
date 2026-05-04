@@ -90,15 +90,6 @@ class Trainer:
                 optimizer, scheduler, run_id, logs, and checkpoint dir are NOT
                 inherited; they all start fresh from the current config.
         """
-        horizon = cfg.training.multi_step_horizon
-        if cfg.model.name == "hgnn" and horizon > 1:
-            msg = (
-                "multi_step_horizon > 1 is not supported for HGNN: "
-                "rollout training compounds with HGNN's internal autograd "
-                "and is too expensive to run by accident."
-            )
-            raise ValueError(msg)
-
         if cfg.training.checkpoint_metric not in ("val_loss", "rollout_score"):
             msg = (
                 f"checkpoint_metric must be 'val_loss' or 'rollout_score', "
@@ -150,7 +141,7 @@ class Trainer:
             logger.info("checkpoint metric: val_loss")
 
     def run(self) -> TrainResult:
-        """Execute the full training loop."""
+        """Execute the full training loop, stage by stage when curriculum is set."""
         cfg = self.cfg
         verbose = cfg.logging.enabled
         best_val_loss = float("inf")
@@ -158,47 +149,88 @@ class Trainer:
         best_epoch = 0
         train_history: list[float] = []
         val_history: list[float] = []
+        last_rollout: RolloutScore | None = None
+        epoch_index = 0
 
-        for epoch in range(1, cfg.training.epochs + 1):
-            train_loss = self._run_epoch(training=True, verbose=verbose)
-            val_loss = self._run_epoch(training=False, verbose=verbose)
+        stages = self._stages()
+        total_epochs = sum(n for _, n in stages)
+        for stage_idx, (horizon, n_stage_epochs) in enumerate(stages):
+            if horizon != self.current_horizon:
+                self.train_loader, self.val_loader = self._setup_loaders_for_horizon(horizon)
+                self.current_horizon = horizon
+                self.diagnostics.dataset = self.train_loader.dataset
 
-            current_lr = self.optimizer.param_groups[0]["lr"]
-            train_history.append(train_loss)
-            val_history.append(val_loss)
-
-            rollout = self.rollout_evaluator.score(self.model) if self.rollout_evaluator else None
-            selected_metric = cfg.training.checkpoint_metric
-            selected_score = rollout.score if rollout is not None else val_loss
-
-            # scheduler tracks the same metric used for best-checkpoint selection so
-            # LR adaptation and best.pt agree on what improvement means.
-            if self.scheduler is not None:
-                self.scheduler.step(selected_score)
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-
-            is_best = selected_score < best_selected_score
-            if is_best:
-                best_selected_score = selected_score
-                best_epoch = epoch
-
-            self._checkpoint(
-                epoch,
-                val_loss=val_loss,
-                rollout=rollout,
-                selected_metric=selected_metric,
-                selected_score=selected_score,
-                is_best=is_best,
+            stage_lr = self.optimizer.param_groups[0]["lr"]
+            score_before = f"{last_rollout.score:+.4f}" if last_rollout is not None else "n/a"
+            logger.info(
+                "stage %d/%d start | horizon=%d | epochs %d..%d | lr=%.2e | rscore_before=%s",
+                stage_idx + 1,
+                len(stages),
+                horizon,
+                epoch_index + 1,
+                epoch_index + n_stage_epochs,
+                stage_lr,
+                score_before,
             )
-            self._log_epoch(epoch, train_loss, val_loss, current_lr, rollout)
 
+            for _ in range(n_stage_epochs):
+                epoch_index += 1
+                train_loss = self._run_epoch(training=True, verbose=verbose)
+                val_loss = self._run_epoch(training=False, verbose=verbose)
+
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                train_history.append(train_loss)
+                val_history.append(val_loss)
+
+                rollout = (
+                    self.rollout_evaluator.score(self.model) if self.rollout_evaluator else None
+                )
+                selected_metric = cfg.training.checkpoint_metric
+                selected_score = rollout.score if rollout is not None else val_loss
+
+                # scheduler tracks the same metric used for best-checkpoint selection so
+                # LR adaptation and best.pt agree on what improvement means.
+                if self.scheduler is not None:
+                    self.scheduler.step(selected_score)
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+
+                is_best = selected_score < best_selected_score
+                if is_best:
+                    best_selected_score = selected_score
+                    best_epoch = epoch_index
+
+                self._checkpoint(
+                    epoch_index,
+                    val_loss=val_loss,
+                    rollout=rollout,
+                    selected_metric=selected_metric,
+                    selected_score=selected_score,
+                    is_best=is_best,
+                )
+                self._log_epoch(
+                    epoch_index, total_epochs, train_loss, val_loss, current_lr, rollout
+                )
+                last_rollout = rollout
+
+            score_after = f"{last_rollout.score:+.4f}" if last_rollout is not None else "n/a"
+            logger.info(
+                "stage %d/%d done  | horizon=%d | rscore_after=%s",
+                stage_idx + 1,
+                len(stages),
+                horizon,
+                score_after,
+            )
+
+        val_loss_at_best = val_history[best_epoch - 1] if best_epoch > 0 else float("inf")
         logger.info(
-            "best %s: %.6f at epoch %d (val_loss %.6f)",
+            "best %s: %.6f at epoch %d (val_loss=%.6f at that epoch); "
+            "min val_loss across run: %.6f",
             cfg.training.checkpoint_metric,
             best_selected_score,
             best_epoch,
+            val_loss_at_best,
             best_val_loss,
         )
 
@@ -213,38 +245,94 @@ class Trainer:
     # --- setup helpers ---
 
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
-        """Create data loaders and training-set normalization stats."""
+        """Compute one-time normalization stats and build initial-stage loaders.
+
+        Stats are computed exactly once from whichever dataset corresponds to
+        the initial stage horizon. They are NOT recomputed when loaders are
+        rebuilt for later curriculum stages, so the model's pos_std/vel_std
+        buffers remain stable across the whole run. Practical effect: with
+        the planned schedules that always start at horizon=1, stats come
+        from the full one-step dataset and match prior behavior.
+        """
         cfg = self.cfg
-        horizon = cfg.training.multi_step_horizon
-        train_set = self._build_dataset(cfg.data.train_path, horizon, cfg.data.n_train_trajectories)
-        val_set = self._build_dataset(cfg.data.val_path, horizon)
+        initial_horizon = self._initial_stage_horizon()
+        train_set = self._build_dataset(
+            cfg.data.train_path, initial_horizon, cfg.data.n_train_trajectories
+        )
+        val_set = self._build_dataset(cfg.data.val_path, initial_horizon)
 
         self.pos_std = float(train_set.inputs[..., :2].std())
         self.vel_std = float(train_set.inputs[..., 2:4].std())
+        self.current_horizon = initial_horizon
         logger.info("data stds: pos=%.4f, vel=%.4f", self.pos_std, self.vel_std)
 
+        train_loader, val_loader = self._loaders_from_sets(train_set, val_set)
+        logger.info(
+            "data: %d train / %d val samples, horizon=%d, batch_size=%d",
+            len(train_set),
+            len(val_set),
+            initial_horizon,
+            cfg.training.batch_size,
+        )
+        return train_loader, val_loader
+
+    def _setup_loaders_for_horizon(self, horizon: int) -> tuple[DataLoader, DataLoader]:
+        """Build fresh train/val loaders at the given horizon (no stat recomputation)."""
+        cfg = self.cfg
+        train_set = self._build_dataset(cfg.data.train_path, horizon, cfg.data.n_train_trajectories)
+        val_set = self._build_dataset(cfg.data.val_path, horizon)
+        train_loader, val_loader = self._loaders_from_sets(train_set, val_set)
+        logger.info(
+            "loaders rebuilt: %d train / %d val samples, horizon=%d, batch_size=%d",
+            len(train_set),
+            len(val_set),
+            horizon,
+            cfg.training.batch_size,
+        )
+        return train_loader, val_loader
+
+    def _loaders_from_sets(
+        self, train_set: Dataset, val_set: Dataset
+    ) -> tuple[DataLoader, DataLoader]:
+        """Wrap train/val datasets into DataLoaders with the trainer's settings."""
         use_cuda = self.device.type == "cuda"
         train_loader = DataLoader(
             train_set,
-            batch_size=cfg.training.batch_size,
+            batch_size=self.cfg.training.batch_size,
             shuffle=True,
             pin_memory=use_cuda,
         )
         val_loader = DataLoader(
             val_set,
-            batch_size=cfg.training.batch_size,
+            batch_size=self.cfg.training.batch_size,
             shuffle=False,
             pin_memory=use_cuda,
         )
-
-        logger.info(
-            "data: %d train / %d val samples, batch_size=%d",
-            len(train_set),
-            len(val_set),
-            cfg.training.batch_size,
-        )
-
         return train_loader, val_loader
+
+    def _initial_stage_horizon(self) -> int:
+        """Horizon used for the first stage of the run.
+
+        In curriculum mode this is the first scheduled horizon; otherwise it
+        is the configured single-horizon `multi_step_horizon`.
+        """
+        cfg = self.cfg
+        if cfg.training.curriculum_horizons is not None:
+            return cfg.training.curriculum_horizons[0]
+        return cfg.training.multi_step_horizon
+
+    def _stages(self) -> list[tuple[int, int]]:
+        """Return the schedule as a list of (horizon, epochs_in_stage) tuples."""
+        cfg = self.cfg
+        if cfg.training.curriculum_horizons is not None:
+            return list(
+                zip(
+                    cfg.training.curriculum_horizons,
+                    cfg.training.curriculum_epochs,
+                    strict=True,
+                )
+            )
+        return [(cfg.training.multi_step_horizon, cfg.training.epochs)]
 
     def _setup_model(self) -> nn.Module:
         """Build the model and optionally print a summary."""
@@ -408,7 +496,7 @@ class Trainer:
         `diag_targets` is the single-step target tensor (B, N, 5) suitable for
         feeding to TrainingDiagnostics, regardless of which path runs.
         """
-        if self.cfg.training.multi_step_horizon == 1:
+        if self.current_horizon == 1:
             preds, loss = self._one_step_loss(inputs, targets)
             return preds, loss, targets
         preds, loss = self._multi_step_rollout_loss(inputs, targets)
@@ -442,7 +530,7 @@ class Trainer:
         Mass is excluded from the loss because the model passes it through
         unchanged at every step and the trajectory keeps it constant.
         """
-        horizon = self.cfg.training.multi_step_horizon
+        horizon = self.current_horizon
         gamma = self.cfg.training.multi_step_gamma
 
         state = self.model(inputs)
@@ -495,12 +583,19 @@ class Trainer:
     def _log_epoch(
         self,
         epoch: int,
+        total_epochs: int,
         train_loss: float,
         val_loss: float,
         lr: float,
         rollout: RolloutScore | None,
     ) -> None:
-        """Write epoch metrics to CSV and console."""
+        """Write epoch metrics to CSV and console.
+
+        `total_epochs` is the run-wide denominator. In single-horizon mode it
+        equals `cfg.training.epochs`; in curriculum mode it is the sum of
+        `curriculum_epochs`. Computing it in `run` avoids the `epoch/0`
+        rendering artefact that would otherwise show up under curriculum.
+        """
         if self.csv_path is not None:
             metrics = EpochMetrics(
                 epoch=epoch,
@@ -520,7 +615,7 @@ class Trainer:
             logger.info(
                 "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",
                 epoch,
-                self.cfg.training.epochs,
+                total_epochs,
                 train_loss,
                 val_loss,
                 lr,
@@ -530,7 +625,7 @@ class Trainer:
                 "epoch %3d/%d | train %.6f | val %.6f | rscore %+.4f "
                 "| dom %d | beat %.2f | lr %.2e",
                 epoch,
-                self.cfg.training.epochs,
+                total_epochs,
                 train_loss,
                 val_loss,
                 rollout.score,
