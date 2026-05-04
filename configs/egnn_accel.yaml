@@ -15,7 +15,7 @@ training:
   lr: 5.0e-4
   weight_decay: 1.0e-5
   loss: mse
-  noise_factor: 0.1
+  noise_factor: 0.0
   multi_step_horizon: 1
   multi_step_gamma: 1.0
   seed: 42
