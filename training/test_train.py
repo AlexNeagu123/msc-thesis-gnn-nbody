@@ -22,7 +22,7 @@ from training._types import (
     TrainingParams,
     TrainResult,
 )
-from training.train import Trainer, load_config, train
+from training.train import Trainer, apply_artifact_dir, load_config, train
 
 
 class DummyModel(nn.Module):
@@ -1000,3 +1000,54 @@ def test_curriculum_best_checkpoint_indexes_globally(make_cfg: TrainConfig) -> N
 
     assert best_ckpt.epoch == 3
     assert best_ckpt.selected_score == pytest.approx(0.1)
+
+
+# --- artifact dir override ---
+
+
+def test_apply_artifact_dir_sets_both_dirs(make_cfg: TrainConfig) -> None:
+    """Both checkpointing and logging dirs are pointed at the artifact root."""
+    cfg = apply_artifact_dir(make_cfg, "runs/curriculum/egnn/n5000")
+
+    assert cfg.checkpointing.dir == "runs/curriculum/egnn/n5000"
+    assert cfg.logging.dir == "runs/curriculum/egnn/n5000"
+
+
+def test_apply_artifact_dir_force_enables_both(make_cfg: TrainConfig) -> None:
+    """Override implies the user wants artifacts persisted; both flags flip on."""
+    cfg = replace(
+        make_cfg,
+        checkpointing=replace(make_cfg.checkpointing, enabled=False),
+        logging=replace(make_cfg.logging, enabled=False),
+    )
+    cfg = apply_artifact_dir(cfg, "runs/single/egnn/n1000")
+
+    assert cfg.checkpointing.enabled is True
+    assert cfg.logging.enabled is True
+
+
+def test_apply_artifact_dir_preserves_other_fields(make_cfg: TrainConfig) -> None:
+    """Override only mutates the two dir fields; everything else is untouched."""
+    cfg = apply_artifact_dir(make_cfg, "runs/x")
+
+    assert cfg.model == make_cfg.model
+    assert cfg.data == make_cfg.data
+    assert cfg.training == make_cfg.training
+    assert cfg.scheduler == make_cfg.scheduler
+
+
+def test_artifact_dir_colocates_checkpoints_and_metrics(
+    make_cfg: TrainConfig, tmp_path: Path
+) -> None:
+    """End-to-end: best.pt, latest.pt, and metrics.csv land under the same run_id."""
+    artifact_dir = tmp_path / "runs" / "single" / "egnn" / "n5000"
+    cfg = apply_artifact_dir(make_cfg, artifact_dir)
+
+    train(cfg, model=DummyModel())
+
+    run_dirs = list(artifact_dir.iterdir())
+    assert len(run_dirs) == 1, f"expected exactly one run dir under {artifact_dir}"
+    run_dir = run_dirs[0]
+    assert (run_dir / "best.pt").exists()
+    assert (run_dir / "latest.pt").exists()
+    assert (run_dir / "metrics.csv").exists()

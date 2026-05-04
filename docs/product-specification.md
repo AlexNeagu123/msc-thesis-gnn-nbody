@@ -120,15 +120,23 @@ Outputs:
 
 ### Train One Model
 
+For a thesis-quality run, write artifacts under the canonical `runs/`
+archive so checkpoints, metrics, and evaluation stay colocated:
+
+```bash
+uv run python -m training.train \
+  --config configs/egnn_curriculum.yaml \
+  --n-train 5000 \
+  --artifact-dir runs/curriculum/egnn/n5000
+```
+
+The two training-only forms below still work and are useful for ad-hoc
+local experiments. Without `--artifact-dir`, paths come from the YAML
+(typically the legacy `checkpoints/` / `logs/` roots):
+
 ```bash
 uv run python -m training.train --config configs/egnn.yaml
 uv run python -m training.train --config configs/hgnn.yaml
-```
-
-For a data-scaling run:
-
-```bash
-uv run python -m training.train --config configs/egnn.yaml --n-train 1000
 ```
 
 Arguments:
@@ -137,12 +145,15 @@ Arguments:
 | --- | --- | --- | --- |
 | `--config` | Yes | None | Model training YAML file. |
 | `--n-train` | No | Config value | Use only the first N training trajectories. |
+| `--artifact-dir` | No | YAML values | Single directory under which both checkpoints and metrics are written, force-enabling both. The trainer appends `<run_id>` as a per-run subdirectory. |
+| `--init-checkpoint` | No | None | Initialise model weights from a previous checkpoint; optimizer, scheduler, and run_id all start fresh. |
 
-Outputs:
+Outputs (canonical layout, with `--artifact-dir runs/curriculum/egnn/n5000`):
 
-- `checkpoints/<model>/<run_id>/latest.pt`
-- `checkpoints/<model>/<run_id>/best.pt`
-- `logs/<model>/<run_id>/metrics.csv`
+- `runs/curriculum/egnn/n5000/<run_id>/best.pt`
+- `runs/curriculum/egnn/n5000/<run_id>/latest.pt`
+- `runs/curriculum/egnn/n5000/<run_id>/metrics.csv`
+- `runs/curriculum/egnn/n5000/<run_id>/diagnostics.log`
 
 ### Run a Data-Scaling Sweep
 
@@ -156,13 +167,18 @@ Arguments:
 | --- | --- | --- | --- |
 | `--config` | Yes | None | Model training YAML file. |
 | `--sizes` | No | `1000,2000,5000` | Comma-separated training-set sizes. |
+| `--artifact-root` | No | `runs/scaling` | Parent directory for per-size run folders. Each size lands at `<root>/<model>/n<N>/<run_id>/`. |
 
 Purpose:
 
 - Produce matched checkpoints across training-set sizes.
 - Keep architecture and optimization fixed while varying only data volume.
 
-### Run EGNN Noise Sweep
+Outputs (default root):
+
+- `runs/scaling/<model>/n<N>/<run_id>/{best.pt, latest.pt, metrics.csv, diagnostics.log}`
+
+### Run a 2-D Hyperparameter Sweep (LR x noise)
 
 ```bash
 uv run python -m training.sweep --config configs/egnn.yaml --epochs 200
@@ -173,7 +189,8 @@ Arguments:
 | Argument | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `--config` | No | `configs/egnn.yaml` | Base EGNN config. |
-| `--epochs` | No | `200` | Epochs per sweep run. |
+| `--epochs` | No | `200` | Epochs per sweep cell. |
+| `--artifact-root` | No | `runs/sweep` | Parent directory for per-cell run folders. Each cell lands at `<root>/<model>/lr_<lr>_nf_<nf>/<run_id>/`. |
 
 Current grid:
 
@@ -182,18 +199,26 @@ Current grid:
 
 Purpose:
 
-- Test whether input-noise training improves EGNN autoregressive rollout stability.
+- 2-D grid search; deliberately separate from the Colab single-axis noise sweep that lives under `runs/noise_sweep/...`.
 
 ### Evaluate a Checkpoint
 
+For checkpoints under `runs/`, the evaluator defaults to writing the
+report next to the checkpoint, so artifacts stay self-contained. Pass
+`--output-dir` only when overriding that default:
+
 ```bash
 uv run python -m evaluation.evaluate \
-  --config configs/egnn.yaml \
-  --checkpoint checkpoints/egnn/<run_id>/best.pt \
+  --config configs/egnn_curriculum.yaml \
+  --checkpoint runs/curriculum/egnn/n5000/<run_id>/best.pt \
   --test-path data/output/scaling/test.h5 \
-  --output-dir results/evaluation/egnn/<run_id> \
   --device auto
 ```
+
+This writes:
+
+- `runs/curriculum/egnn/n5000/<run_id>/evaluation/metrics.json`
+- `runs/curriculum/egnn/n5000/<run_id>/evaluation/summary.csv`
 
 Arguments:
 
@@ -202,8 +227,16 @@ Arguments:
 | `--config` | Yes | None | Model config used to rebuild the architecture. |
 | `--checkpoint` | Yes | None | Checkpoint to evaluate. |
 | `--test-path` | No | `data/output/test.h5` | Test HDF5 file. |
-| `--output-dir` | No | `results/evaluation/<model>/<run_id>` | Evaluation output directory. |
+| `--output-dir` | No | See below | Evaluation output directory. |
 | `--device` | No | `auto` | `auto`, `cuda`, `mps`, or `cpu`. |
+
+`--output-dir` resolution:
+
+1. Explicit value always wins.
+2. Otherwise, if the checkpoint sits under any `runs/` ancestor, defaults
+   to `<run_dir>/evaluation/` (canonical layout).
+3. Otherwise (legacy `checkpoints/<model>/<run_id>/`), falls back to
+   `results/evaluation/<model>/<run_id>/`.
 
 Outputs:
 

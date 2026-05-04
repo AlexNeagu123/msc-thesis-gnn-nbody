@@ -4,6 +4,10 @@ Runs the same model config at multiple n_train_trajectories values, recording
 each run's checkpoint and best validation loss. Used to answer the question:
 does the EGNN-vs-HGNN comparison change as more training data is added?
 
+Each per-size run lands under `<artifact_root>/<model>/n<N_TRAIN>/<run_id>/`
+so multiple sizes can coexist in the same archive. Default artifact root is
+`runs/scaling` to match the canonical layout.
+
 Usage::
 
     python -m training.scaling --config configs/egnn.yaml --sizes 1000,2000,5000
@@ -14,18 +18,49 @@ References:
 """
 
 import argparse
+from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 
 from training._types import TrainConfig
-from training.train import Trainer, load_config
+from training.train import Trainer, apply_artifact_dir, load_config
 from utils import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_ARTIFACT_ROOT = "runs/scaling"
 
-def run_scaling(base_cfg: TrainConfig, sizes: list[int]) -> None:
-    """Run training at each dataset size in `sizes`."""
-    logger.info("data-scaling sweep: %d runs at sizes=%s", len(sizes), sizes)
+
+def scaling_artifact_dir(model_name: str, n_train: int, root: str | Path) -> Path:
+    """Path each per-size run is written to under the canonical layout."""
+    return Path(root) / model_name / f"n{n_train}"
+
+
+def run_scaling(
+    base_cfg: TrainConfig,
+    sizes: list[int],
+    *,
+    artifact_root: str | Path = DEFAULT_ARTIFACT_ROOT,
+    trainer_factory: Callable[[TrainConfig], Trainer] | None = None,
+) -> None:
+    """Run training at each dataset size in `sizes`.
+
+    Args:
+        base_cfg: shared model/training config.
+        sizes: ordered list of n_train_trajectories values to sweep.
+        artifact_root: parent directory under which per-size run folders are
+            created. Each run lands at `<artifact_root>/<model>/n<N_TRAIN>/`.
+        trainer_factory: optional factory used to construct each per-size
+            trainer. Used by tests to inject a DummyModel; production runs
+            leave it None to fall through to `Trainer(cfg)`.
+    """
+    factory = trainer_factory or Trainer
+    logger.info(
+        "data-scaling sweep: %d runs at sizes=%s, artifact_root=%s",
+        len(sizes),
+        sizes,
+        artifact_root,
+    )
 
     results = []
 
@@ -34,8 +69,9 @@ def run_scaling(base_cfg: TrainConfig, sizes: list[int]) -> None:
 
         data = replace(base_cfg.data, n_train_trajectories=n_train)
         cfg = replace(base_cfg, data=data)
+        cfg = apply_artifact_dir(cfg, scaling_artifact_dir(cfg.model.name, n_train, artifact_root))
 
-        trainer = Trainer(cfg)
+        trainer = factory(cfg)
         result = trainer.run()
 
         results.append(
@@ -89,8 +125,17 @@ if __name__ == "__main__":
         default="1000,2000,5000",
         help="Comma-separated list of n_train_trajectories values.",
     )
+    parser.add_argument(
+        "--artifact-root",
+        type=str,
+        default=DEFAULT_ARTIFACT_ROOT,
+        help=(
+            "Parent directory under which per-size run folders are created. "
+            f"Default: {DEFAULT_ARTIFACT_ROOT}."
+        ),
+    )
     args = parser.parse_args()
 
     sizes = [int(s) for s in args.sizes.split(",")]
     config = load_config(args.config)
-    run_scaling(config, sizes)
+    run_scaling(config, sizes, artifact_root=args.artifact_root)

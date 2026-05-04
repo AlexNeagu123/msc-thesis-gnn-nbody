@@ -428,9 +428,19 @@ def _optional_float(value: object | None) -> float | None:
 
 
 def _output_dir(output_dir: str | Path | None, model_name: str, checkpoint_path: Path) -> Path:
-    """Resolve the report output directory."""
+    """Resolve the report output directory.
+
+    Resolution order:
+        1. Explicit `output_dir` always wins.
+        2. If the checkpoint sits under any `runs/` ancestor (canonical layout),
+           default to `<run_dir>/evaluation/` so artifacts stay self-contained.
+        3. Otherwise (legacy `checkpoints/<model>/<run_id>/`), fall back to
+           `results/evaluation/<model>/<run_id>/` for ad-hoc evaluation.
+    """
     if output_dir is not None:
         return Path(output_dir)
+    if "runs" in checkpoint_path.parts:
+        return checkpoint_path.parent / "evaluation"
     return Path("results") / "evaluation" / model_name / checkpoint_path.parent.name
 
 

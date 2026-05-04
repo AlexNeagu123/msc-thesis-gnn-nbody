@@ -40,7 +40,7 @@ logger = get_logger(__name__)
 
 
 # re-exported so existing callers `from training.train import load_config` keep working
-__all__ = ["Trainer", "build_model", "load_config", "train"]
+__all__ = ["Trainer", "apply_artifact_dir", "build_model", "load_config", "train"]
 
 
 def build_model(
@@ -703,6 +703,22 @@ def train(
     return Trainer(cfg, model=model, init_checkpoint=init_checkpoint).run()
 
 
+def apply_artifact_dir(cfg: TrainConfig, artifact_dir: str | Path) -> TrainConfig:
+    """Override checkpointing.dir and logging.dir to a single artifact root.
+
+    Force-enables both checkpointing and logging because the override only
+    makes sense when artifacts are actually written. Use this at the CLI
+    entry point or from orchestration scripts (scaling, sweep) to put every
+    run under the canonical `runs/<mode>/...` layout without editing YAMLs.
+    """
+    artifact_dir = str(artifact_dir)
+    return replace(
+        cfg,
+        checkpointing=replace(cfg.checkpointing, enabled=True, dir=artifact_dir),
+        logging=replace(cfg.logging, enabled=True, dir=artifact_dir),
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model.")
     parser.add_argument(
@@ -726,10 +742,23 @@ if __name__ == "__main__":
             "Optimizer, scheduler, run_id, logs, and checkpoints all start fresh."
         ),
     )
+    parser.add_argument(
+        "--artifact-dir",
+        type=str,
+        default=None,
+        help=(
+            "Single artifact root under which checkpoints and logs are both "
+            "written for this run, force-enabling both. Lets local runs match "
+            "the canonical runs/<mode>/<model>/n<N>/ layout without editing the "
+            "YAML. The trainer still appends <run_id> as a per-run subdirectory."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     if args.n_train is not None:
         config = replace(config, data=replace(config.data, n_train_trajectories=args.n_train))
+    if args.artifact_dir is not None:
+        config = apply_artifact_dir(config, args.artifact_dir)
     results = train(config, init_checkpoint=args.init_checkpoint)
     logger.info("results: %s", results)

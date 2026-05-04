@@ -98,11 +98,34 @@ def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
     assert _normalization_stats(cfg, checkpoint) == (12.5, 3.25)
 
 
-def test_default_output_dir_is_top_level_results() -> None:
-    """Default evaluation reports stay outside the source package."""
+def test_default_output_dir_for_legacy_checkpoint_falls_back_to_results() -> None:
+    """Legacy `checkpoints/...` layout keeps writing reports under results/."""
     path = _output_dir(None, "egnn", Path("checkpoints/egnn/20260416_234825/best.pt"))
 
     assert path == Path("results/evaluation/egnn/20260416_234825")
+
+
+def test_default_output_dir_for_canonical_runs_checkpoint_colocates() -> None:
+    """Canonical `runs/...` checkpoint puts the report next to the checkpoint."""
+    ckpt = Path("runs/curriculum/egnn/n5000/20260504_120000/best.pt")
+    path = _output_dir(None, "egnn", ckpt)
+
+    assert path == Path("runs/curriculum/egnn/n5000/20260504_120000/evaluation")
+
+
+def test_default_output_dir_works_for_other_canonical_modes() -> None:
+    """Detection should not be specific to one mode; any `runs/` ancestor counts."""
+    for mode in ("single", "scaling", "sweep", "noise_sweep"):
+        ckpt = Path(f"runs/{mode}/egnn/foo/20260101_000000/best.pt")
+        assert _output_dir(None, "egnn", ckpt) == ckpt.parent / "evaluation"
+
+
+def test_explicit_output_dir_wins_over_canonical_default() -> None:
+    """Explicit --output-dir is honored even when the checkpoint sits under runs/."""
+    ckpt = Path("runs/single/egnn/n5000/20260504_120000/best.pt")
+    explicit = Path("/tmp/somewhere/else")
+
+    assert _output_dir(explicit, "egnn", ckpt) == explicit
 
 
 def test_evaluate_checkpoint_writes_json_and_csv(tmp_path: Path) -> None:
