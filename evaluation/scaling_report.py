@@ -10,13 +10,13 @@ Usage::
 Manifest format::
 
     egnn:
-      1000: /path/to/runs/egnn/<run_id>/evaluation/metrics.json
-      2000: /path/to/runs/egnn/<run_id>/evaluation/metrics.json
-      5000: /path/to/runs/egnn/<run_id>/evaluation/metrics.json
+      1000: /path/to/runs/scaling/egnn/n1000/<run_id>/evaluation/metrics.json
+      2000: /path/to/runs/scaling/egnn/n2000/<run_id>/evaluation/metrics.json
+      5000: /path/to/runs/scaling/egnn/n5000/<run_id>/evaluation/metrics.json
     hgnn:
-      1000: /path/to/runs/hgnn/<run_id>/evaluation/metrics.json
-      2000: /path/to/runs/hgnn/<run_id>/evaluation/metrics.json
-      5000: /path/to/runs/hgnn/<run_id>/evaluation/metrics.json
+      1000: /path/to/runs/scaling/hgnn/n1000/<run_id>/evaluation/metrics.json
+      2000: /path/to/runs/scaling/hgnn/n2000/<run_id>/evaluation/metrics.json
+      5000: /path/to/runs/scaling/hgnn/n5000/<run_id>/evaluation/metrics.json
 
 References:
     - Methodology: edu/data-scaling-methodology.md

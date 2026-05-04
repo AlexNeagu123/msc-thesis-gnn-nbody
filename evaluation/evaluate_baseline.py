@@ -125,10 +125,10 @@ def _build_baseline(
 
 
 def _resolve_output_dir(output_dir: str | Path | None, baseline: str) -> Path:
-    """Default to results/evaluation/baselines/<kind> when not specified."""
+    """Default to runs/baselines/<kind>/evaluation when not specified."""
     if output_dir is not None:
         return Path(output_dir)
-    return Path("results/evaluation/baselines") / baseline
+    return Path("runs/baselines") / baseline / "evaluation"
 
 
 def main() -> None:

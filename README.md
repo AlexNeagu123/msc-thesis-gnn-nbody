@@ -22,8 +22,12 @@ uv run python -m data.generate --config configs/data.yaml
 Train a model:
 
 ```bash
-uv run python -m training.train --config configs/egnn.yaml
-uv run python -m training.train --config configs/hgnn.yaml
+uv run python -m training.train \
+  --config configs/egnn.yaml \
+  --artifact-dir runs/single/egnn/n1000
+uv run python -m training.train \
+  --config configs/hgnn.yaml \
+  --artifact-dir runs/single/hgnn/n1000
 ```
 
 Evaluate a checkpoint:
@@ -31,7 +35,7 @@ Evaluate a checkpoint:
 ```bash
 uv run python -m evaluation.evaluate \
   --config configs/egnn.yaml \
-  --checkpoint checkpoints/egnn/<run_id>/best.pt
+  --checkpoint runs/single/egnn/n1000/<run_id>/best.pt
 ```
 
 For the complete command and artifact contract, read the product specification.

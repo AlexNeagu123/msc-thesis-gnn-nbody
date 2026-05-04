@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from evaluation._types import EvaluationReport
-from evaluation.evaluate_baseline import evaluate_baseline
+from evaluation.evaluate_baseline import _resolve_output_dir, evaluate_baseline
 
 
 def _write_h5(path: Path, n_traj: int = 2, n_steps: int = 4) -> None:
@@ -89,6 +89,13 @@ def test_persistence_baseline_runs_without_train_path(tmp_path: Path) -> None:
 
     assert (output_dir / "metrics.json").exists()
     assert report.metadata.model_name == "baseline_persistence"
+
+
+def test_default_baseline_output_dir_uses_runs_archive() -> None:
+    """Baseline reports default into the canonical runs/ artifact archive."""
+    assert _resolve_output_dir(None, "persistence") == Path(
+        "runs/baselines/persistence/evaluation"
+    )
 
 
 def test_baseline_rejects_fitted_without_train_path(tmp_path: Path) -> None:
