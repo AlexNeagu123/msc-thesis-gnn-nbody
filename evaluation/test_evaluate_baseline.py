@@ -93,9 +93,7 @@ def test_persistence_baseline_runs_without_train_path(tmp_path: Path) -> None:
 
 def test_default_baseline_output_dir_uses_runs_archive() -> None:
     """Baseline reports default into the canonical runs/ artifact archive."""
-    assert _resolve_output_dir(None, "persistence") == Path(
-        "runs/baselines/persistence/evaluation"
-    )
+    assert _resolve_output_dir(None, "persistence") == Path("runs/baselines/persistence/evaluation")
 
 
 def test_baseline_rejects_fitted_without_train_path(tmp_path: Path) -> None:
