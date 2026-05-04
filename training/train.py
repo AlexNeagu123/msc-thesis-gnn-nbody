@@ -23,7 +23,6 @@ from tqdm import tqdm
 
 from data.dataset import NBodyDataset, TrajectoryWindowDataset
 from models.egnn import EGNN
-from models.egnn_accel import EGNNAccel
 from models.hgnn import HGNN
 from training._io import (
     append_metrics,
@@ -55,14 +54,6 @@ def build_model(
         return EGNN(
             hidden_dim=cfg.model.hidden_dim,
             n_layers=cfg.model.n_layers,
-            pos_std=pos_std,
-            vel_std=vel_std,
-        )
-    if name == "egnn_accel":
-        return EGNNAccel(
-            hidden_dim=cfg.model.hidden_dim,
-            n_layers=cfg.model.n_layers,
-            dt=cfg.data.dt,
             pos_std=pos_std,
             vel_std=vel_std,
         )
