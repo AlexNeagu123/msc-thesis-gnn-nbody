@@ -11,16 +11,16 @@ data:
 
 training:
   batch_size: 128
-  lr: 1.0e-4
+  lr: 2.5e-5
   weight_decay: 1.0e-5
   loss: mse
   noise_factor: 0.03
   seed: 42
   device: auto
-  multi_step_gamma: 1.0
+  multi_step_gamma: 0.8
   checkpoint_metric: rollout_score
-  curriculum_horizons: [1, 5, 10, 20, 50, 100, 199]
-  curriculum_epochs:   [10, 10, 10, 10, 10, 5, 2]
+  curriculum_horizons: [1, 2, 3, 5, 10, 20, 50, 100, 199]
+  curriculum_epochs:   [8, 8, 8, 8, 8, 8, 6, 4, 2]
 
 scheduler:
   enabled: true
