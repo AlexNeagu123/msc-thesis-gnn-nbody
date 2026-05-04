@@ -42,6 +42,7 @@ class TrainingParams:
     device: str = "auto"
     multi_step_horizon: int = 1
     multi_step_gamma: float = 1.0
+    checkpoint_metric: str = "val_loss"
 
 
 @dataclass
@@ -96,7 +97,13 @@ class TrainConfig:
 
 @dataclass
 class Checkpoint:
-    """State saved to disk at each epoch."""
+    """State saved to disk at each epoch.
+
+    `val_loss` always carries the one-step validation MSE so downstream
+    consumers (evaluation reports) can rely on it. `selected_metric` and
+    `selected_score` describe which metric drove `is_best` for this run;
+    `rollout_score` records the scalar rollout score when computed.
+    """
 
     epoch: int
     model: dict
@@ -108,6 +115,9 @@ class Checkpoint:
     pos_std: float | None = None
     vel_std: float | None = None
     git_commit: str | None = None
+    selected_metric: str | None = None
+    selected_score: float | None = None
+    rollout_score: float | None = None
 
 
 @dataclass
@@ -139,18 +149,40 @@ class RolloutScore:
 
 @dataclass
 class EpochMetrics:
-    """One row of the training metrics CSV."""
+    """One row of the training metrics CSV.
+
+    Rollout diagnostics are populated only when the trainer computes a
+    rollout score for the epoch. Empty strings render in the CSV when None.
+    """
 
     epoch: int
     train_loss: float
     val_loss: float
     lr: float
+    rollout_score: float | None = None
+    dominance_horizon: int | None = None
+    fraction_beating_baseline: float | None = None
+    final_ratio: float | None = None
 
     @classmethod
     def csv_header(cls) -> str:
         """Return the CSV header line (no trailing newline)."""
-        return "epoch,train_loss,val_loss,lr"
+        return (
+            "epoch,train_loss,val_loss,lr,"
+            "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio"
+        )
 
     def to_csv_row(self) -> str:
         """Return one CSV row matching csv_header column order."""
-        return f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e}"
+        rs = "" if self.rollout_score is None else f"{self.rollout_score:.6f}"
+        dh = "" if self.dominance_horizon is None else str(self.dominance_horizon)
+        fb = (
+            ""
+            if self.fraction_beating_baseline is None
+            else f"{self.fraction_beating_baseline:.6f}"
+        )
+        fr = "" if self.final_ratio is None else f"{self.final_ratio:.6f}"
+        return (
+            f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e},"
+            f"{rs},{dh},{fb},{fr}"
+        )

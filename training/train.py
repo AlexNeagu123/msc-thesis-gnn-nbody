@@ -31,8 +31,9 @@ from training._io import (
     load_config,
     save_checkpoint,
 )
-from training._types import Checkpoint, EpochMetrics, TrainConfig, TrainResult
+from training._types import Checkpoint, EpochMetrics, RolloutScore, TrainConfig, TrainResult
 from training.diagnostics import TrainingDiagnostics
+from training.rollout_score import RolloutScoreEvaluator
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -98,6 +99,13 @@ class Trainer:
             )
             raise ValueError(msg)
 
+        if cfg.training.checkpoint_metric not in ("val_loss", "rollout_score"):
+            msg = (
+                f"checkpoint_metric must be 'val_loss' or 'rollout_score', "
+                f"got {cfg.training.checkpoint_metric!r}"
+            )
+            raise ValueError(msg)
+
         self.cfg = cfg
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -129,11 +137,24 @@ class Trainer:
             dataset=self.train_loader.dataset,
         )
 
+        self.rollout_evaluator: RolloutScoreEvaluator | None = None
+        if cfg.training.checkpoint_metric == "rollout_score":
+            self.rollout_evaluator = RolloutScoreEvaluator(
+                val_path=cfg.data.val_path,
+                train_path=cfg.data.train_path,
+                dt=cfg.data.dt,
+                device=self.device,
+            )
+            logger.info("checkpoint metric: rollout_score (evaluator constructed lazily)")
+        else:
+            logger.info("checkpoint metric: val_loss")
+
     def run(self) -> TrainResult:
         """Execute the full training loop."""
         cfg = self.cfg
         verbose = cfg.logging.enabled
         best_val_loss = float("inf")
+        best_selected_score = float("inf")
         best_epoch = 0
         train_history: list[float] = []
         val_history: list[float] = []
@@ -146,18 +167,40 @@ class Trainer:
             train_history.append(train_loss)
             val_history.append(val_loss)
 
-            if self.scheduler is not None:
-                self.scheduler.step(val_loss)
+            rollout = self.rollout_evaluator.score(self.model) if self.rollout_evaluator else None
+            selected_metric = cfg.training.checkpoint_metric
+            selected_score = rollout.score if rollout is not None else val_loss
 
-            is_best = val_loss < best_val_loss
-            if is_best:
+            # scheduler tracks the same metric used for best-checkpoint selection so
+            # LR adaptation and best.pt agree on what improvement means.
+            if self.scheduler is not None:
+                self.scheduler.step(selected_score)
+
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
+
+            is_best = selected_score < best_selected_score
+            if is_best:
+                best_selected_score = selected_score
                 best_epoch = epoch
 
-            self._checkpoint(epoch, val_loss, is_best)
-            self._log_epoch(epoch, train_loss, val_loss, current_lr)
+            self._checkpoint(
+                epoch,
+                val_loss=val_loss,
+                rollout=rollout,
+                selected_metric=selected_metric,
+                selected_score=selected_score,
+                is_best=is_best,
+            )
+            self._log_epoch(epoch, train_loss, val_loss, current_lr, rollout)
 
-        logger.info("best val loss: %.6f at epoch %d", best_val_loss, best_epoch)
+        logger.info(
+            "best %s: %.6f at epoch %d (val_loss %.6f)",
+            cfg.training.checkpoint_metric,
+            best_selected_score,
+            best_epoch,
+            best_val_loss,
+        )
 
         return TrainResult(
             best_val_loss=best_val_loss,
@@ -416,7 +459,16 @@ class Trainer:
 
         return first_preds, weighted_loss / weight_sum
 
-    def _checkpoint(self, epoch: int, val_loss: float, is_best: bool) -> None:
+    def _checkpoint(
+        self,
+        epoch: int,
+        *,
+        val_loss: float,
+        rollout: RolloutScore | None,
+        selected_metric: str,
+        selected_score: float,
+        is_best: bool,
+    ) -> None:
         """Save model checkpoint if enabled."""
         if self.ckpt_dir is None:
             return
@@ -432,6 +484,9 @@ class Trainer:
             pos_std=self.pos_std,
             vel_std=self.vel_std,
             git_commit=self._git_commit(),
+            selected_metric=selected_metric,
+            selected_score=selected_score,
+            rollout_score=rollout.score if rollout is not None else None,
         )
         save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
         if is_best:
@@ -443,22 +498,46 @@ class Trainer:
         train_loss: float,
         val_loss: float,
         lr: float,
+        rollout: RolloutScore | None,
     ) -> None:
         """Write epoch metrics to CSV and console."""
         if self.csv_path is not None:
-            append_metrics(
-                self.csv_path,
-                EpochMetrics(epoch=epoch, train_loss=train_loss, val_loss=val_loss, lr=lr),
+            metrics = EpochMetrics(
+                epoch=epoch,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                lr=lr,
+                rollout_score=rollout.score if rollout is not None else None,
+                dominance_horizon=rollout.dominance_horizon if rollout is not None else None,
+                fraction_beating_baseline=(
+                    rollout.fraction_beating_baseline if rollout is not None else None
+                ),
+                final_ratio=rollout.final_ratio if rollout is not None else None,
             )
+            append_metrics(self.csv_path, metrics)
 
-        logger.info(
-            "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",
-            epoch,
-            self.cfg.training.epochs,
-            train_loss,
-            val_loss,
-            lr,
-        )
+        if rollout is None:
+            logger.info(
+                "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",
+                epoch,
+                self.cfg.training.epochs,
+                train_loss,
+                val_loss,
+                lr,
+            )
+        else:
+            logger.info(
+                "epoch %3d/%d | train %.6f | val %.6f | rscore %+.4f "
+                "| dom %d | beat %.2f | lr %.2e",
+                epoch,
+                self.cfg.training.epochs,
+                train_loss,
+                val_loss,
+                rollout.score,
+                rollout.dominance_horizon,
+                rollout.fraction_beating_baseline,
+                lr,
+            )
 
     # --- static helpers ---
 

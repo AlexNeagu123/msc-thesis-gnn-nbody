@@ -1,5 +1,6 @@
 """Tests for training/train.py."""
 
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from training._types import (
     DataConfig,
     LoggingConfig,
     ModelConfig,
+    RolloutScore,
     SchedulerConfig,
     TrainConfig,
     TrainingParams,
@@ -136,7 +138,10 @@ def test_csv_log_written(make_cfg: TrainConfig) -> None:
     assert csv_path.exists()
 
     lines = csv_path.read_text().strip().split("\n")
-    assert lines[0] == "epoch,train_loss,val_loss,lr"
+    assert lines[0] == (
+        "epoch,train_loss,val_loss,lr,"
+        "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio"
+    )
     assert len(lines) == make_cfg.training.epochs + 1
 
 
@@ -649,3 +654,195 @@ def test_init_checkpoint_accepts_legacy_no_model_name(
 
     trainer = Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
     assert trainer.model is not None
+
+
+# --- checkpoint_metric and rollout-score wiring ---
+
+
+class _ScriptedRolloutEvaluator:
+    """Stand-in for RolloutScoreEvaluator that returns scripted scores per call.
+
+    Used to assert that the trainer's best-checkpoint logic compares
+    `rollout.score` instead of `val_loss` without paying the cost of an
+    actual rollout on validation trajectories.
+    """
+
+    def __init__(self, scores: list[float]) -> None:
+        """Hold the queue of scores; one is popped per `score(...)` call."""
+        self._scores = list(scores)
+
+    def score(self, model: nn.Module) -> RolloutScore:
+        """Return the next scripted score, ignoring the model entirely."""
+        s = self._scores.pop(0)
+        return RolloutScore(
+            score=s,
+            ratios=np.array([s]),
+            dominance_horizon=0,
+            fraction_beating_baseline=0.0,
+            final_ratio=s,
+            ratios_at_step={},
+        )
+
+
+def test_checkpoint_metric_default_is_val_loss(make_cfg: TrainConfig) -> None:
+    """When unspecified, rollout_evaluator is not constructed."""
+    trainer = Trainer(make_cfg, model=DummyModel())
+
+    assert make_cfg.training.checkpoint_metric == "val_loss"
+    assert trainer.rollout_evaluator is None
+
+
+def test_checkpoint_metric_rollout_score_builds_evaluator(make_cfg: TrainConfig) -> None:
+    """Setting checkpoint_metric='rollout_score' constructs a real evaluator."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+
+    assert trainer.rollout_evaluator is not None
+
+
+def test_checkpoint_metric_rejects_unknown(make_cfg: TrainConfig) -> None:
+    """Misspelled or unsupported values raise before any setup runs."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout"),
+    )
+    with pytest.raises(ValueError, match="checkpoint_metric must be"):
+        Trainer(cfg, model=DummyModel())
+
+
+def test_csv_columns_blank_for_val_loss_metric(make_cfg: TrainConfig) -> None:
+    """In the default mode, rollout columns appear in the header but rows are empty."""
+    train(make_cfg, model=DummyModel())
+
+    run_dir = _find_run_dir(make_cfg.logging.dir)
+    lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
+
+    # one header + one row per epoch; trailing four columns blank in every data row
+    for row in lines[1:]:
+        cells = row.split(",")
+        assert cells[-4:] == ["", "", "", ""]
+
+
+def test_csv_columns_populated_for_rollout_score_metric(
+    make_cfg: TrainConfig, tmp_path: Path
+) -> None:
+    """Rollout diagnostics land in the CSV when checkpoint_metric is rollout_score."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    trainer.rollout_evaluator = _ScriptedRolloutEvaluator(scores=[0.7, 0.5, 0.6])
+    trainer.run()
+
+    run_dir = _find_run_dir(cfg.logging.dir)
+    lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
+
+    # one header + 3 data rows; rollout_score column (index 4) is populated each row
+    rollout_scores = [row.split(",")[4] for row in lines[1:]]
+    assert rollout_scores == ["0.700000", "0.500000", "0.600000"]
+
+
+def test_best_checkpoint_selected_by_rollout_score(make_cfg: TrainConfig) -> None:
+    """Best.pt is chosen by rollout_score, not val_loss.
+
+    Scripted scores put the win at epoch 2 regardless of how val_loss orders epochs.
+    """
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    # epoch 2 has the lowest scripted rollout_score, regardless of val_loss order
+    trainer.rollout_evaluator = _ScriptedRolloutEvaluator(scores=[0.7, 0.1, 0.5])
+    trainer.run()
+
+    run_dir = _find_run_dir(cfg.checkpointing.dir)
+    best_ckpt = torch.load(run_dir / "best.pt", weights_only=False)
+
+    assert best_ckpt.epoch == 2
+    assert best_ckpt.selected_metric == "rollout_score"
+    assert best_ckpt.selected_score == pytest.approx(0.1)
+    assert best_ckpt.rollout_score == pytest.approx(0.1)
+
+
+def test_scheduler_steps_on_selected_score_in_rollout_mode(make_cfg: TrainConfig) -> None:
+    """LR scheduler observes rollout_score, not val_loss, when that drives best.pt.
+
+    Otherwise LR adaptation and best-checkpoint selection would react to
+    different signals.
+    """
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
+        scheduler=replace(make_cfg.scheduler, enabled=True, patience=0),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    scripted = [0.7, 0.5, 0.6]
+    trainer.rollout_evaluator = _ScriptedRolloutEvaluator(scores=list(scripted))
+
+    seen: list[float] = []
+    real_step = trainer.scheduler.step
+
+    def _spy(value: float, *args: object, **kwargs: object) -> object:
+        seen.append(float(value))
+        return real_step(value, *args, **kwargs)
+
+    trainer.scheduler.step = _spy  # type: ignore[method-assign]
+    trainer.run()
+
+    assert seen == scripted
+
+
+def test_scheduler_steps_on_val_loss_in_default_mode(make_cfg: TrainConfig) -> None:
+    """In val_loss mode the scheduler still receives val_loss (unchanged behavior)."""
+    cfg = replace(
+        make_cfg,
+        scheduler=replace(make_cfg.scheduler, enabled=True, patience=0),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+
+    seen: list[float] = []
+    real_step = trainer.scheduler.step
+
+    def _spy(value: float, *args: object, **kwargs: object) -> object:
+        seen.append(float(value))
+        return real_step(value, *args, **kwargs)
+
+    trainer.scheduler.step = _spy  # type: ignore[method-assign]
+    result = trainer.run()
+
+    # the scheduler should have seen exactly the per-epoch val_loss values
+    assert len(seen) == cfg.training.epochs
+    assert seen == pytest.approx(result.val_history, rel=1e-9)
+
+
+def test_checkpoint_val_loss_field_remains_one_step_validation_loss(
+    make_cfg: TrainConfig,
+) -> None:
+    """Even with rollout_score selection, Checkpoint.val_loss stays as one-step val MSE.
+
+    Locks the contract that downstream evaluation reports surfacing
+    `checkpoint_val_loss` continue to mean the validation MSE, not the
+    rollout score.
+    """
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    trainer.rollout_evaluator = _ScriptedRolloutEvaluator(scores=[0.7, 0.5, 0.6])
+    result = trainer.run()
+
+    run_dir = _find_run_dir(cfg.checkpointing.dir)
+    best_ckpt = torch.load(run_dir / "best.pt", weights_only=False)
+
+    # selected_score is the rollout score; val_loss is the actual one-step val MSE
+    assert best_ckpt.selected_score == pytest.approx(0.5)
+    assert best_ckpt.val_loss != pytest.approx(0.5)
+    assert math.isfinite(best_ckpt.val_loss)
+    # TrainResult.best_val_loss tracks the lowest one-step val MSE seen
+    assert math.isfinite(result.best_val_loss)
