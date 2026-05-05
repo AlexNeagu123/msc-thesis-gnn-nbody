@@ -14,13 +14,13 @@ training:
   lr: 2.5e-4
   weight_decay: 1.0e-5
   loss: mse
-  noise_factor: 0.03
+  noise_factor: 0.0
   seed: 42
   device: auto
   multi_step_gamma: 1.0
   checkpoint_metric: rollout_score
-  curriculum_horizons: [1, 5, 10, 20]
-  curriculum_epochs:   [30, 20, 10,  5]
+  curriculum_horizons: [1,  2,  3,  5,  7,  10, 15, 20, 50, 100, 150, 199]
+  curriculum_epochs:   [15, 15, 15, 15, 15, 15, 15, 15, 10, 5,   3,   2]
   gradient_clip_norm: 1.0
   skip_nonfinite_batches: true
   reset_optimizer_on_stage: false
