@@ -19,8 +19,12 @@ training:
   device: auto
   multi_step_gamma: 0.8
   checkpoint_metric: rollout_score
-  curriculum_horizons: [1, 2, 3, 5, 10, 20, 50, 100, 199]
-  curriculum_epochs:   [8, 8, 8, 8, 8, 8, 6, 4, 2]
+  curriculum_horizons:              [1,   2,   3,   5,   10,  20,  50,  100, 199]
+  curriculum_epochs:                [8,   8,   8,   8,   8,   8,   6,   4,   2]
+  curriculum_gradient_clip_norms:   [1.0, 1.0, 0.7, 0.5, 0.3, 0.3, 0.2, 0.2, 0.2]
+  gradient_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  reset_optimizer_on_stage: true
 
 scheduler:
   enabled: true

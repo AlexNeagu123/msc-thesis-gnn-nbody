@@ -31,7 +31,14 @@ from training._io import (
     load_config,
     save_checkpoint,
 )
-from training._types import Checkpoint, EpochMetrics, RolloutScore, TrainConfig, TrainResult
+from training._types import (
+    Checkpoint,
+    EpochMetrics,
+    EpochRunSummary,
+    RolloutScore,
+    TrainConfig,
+    TrainResult,
+)
 from training.diagnostics import TrainingDiagnostics
 from training.rollout_score import RolloutScoreEvaluator
 from utils import get_logger
@@ -111,6 +118,7 @@ class Trainer:
 
         self.train_loader, self.val_loader = self._setup_data()
         self.model = model.to(self.device) if model is not None else self._setup_model()
+        self.current_clip_norm = cfg.training.gradient_clip_norm
 
         if init_checkpoint is not None:
             self._load_init_checkpoint(init_checkpoint)
@@ -159,26 +167,36 @@ class Trainer:
                 self.train_loader, self.val_loader = self._setup_loaders_for_horizon(horizon)
                 self.current_horizon = horizon
                 self.diagnostics.dataset = self.train_loader.dataset
+                # reset is gated on horizon change so it fires alongside the loader rebuild;
+                # consecutive same-horizon stages keep optimizer state intact by design.
+                if cfg.training.reset_optimizer_on_stage:
+                    self.optimizer, self.scheduler = self._setup_optimizer()
+                    logger.info("optimizer reset at stage transition | horizon=%d", horizon)
+
+            self.current_clip_norm = self._stage_clip_norm(stage_idx)
 
             stage_lr = self.optimizer.param_groups[0]["lr"]
             score_before = f"{last_rollout.score:+.4f}" if last_rollout is not None else "n/a"
             logger.info(
-                "stage %d/%d start | horizon=%d | epochs %d..%d | lr=%.2e | rscore_before=%s",
+                "stage %d/%d start | horizon=%d | epochs %d..%d | lr=%.2e "
+                "| clip=%.2f | rscore_before=%s",
                 stage_idx + 1,
                 len(stages),
                 horizon,
                 epoch_index + 1,
                 epoch_index + n_stage_epochs,
                 stage_lr,
+                self.current_clip_norm,
                 score_before,
             )
 
             for _ in range(n_stage_epochs):
                 epoch_index += 1
-                train_loss = self._run_epoch(training=True, verbose=verbose)
-                val_loss = self._run_epoch(training=False, verbose=verbose)
+                train_summary = self._run_epoch(training=True, verbose=verbose)
+                val_summary = self._run_epoch(training=False, verbose=verbose)
+                train_loss = train_summary.loss
+                val_loss = val_summary.loss
 
-                current_lr = self.optimizer.param_groups[0]["lr"]
                 train_history.append(train_loss)
                 val_history.append(val_loss)
 
@@ -192,6 +210,9 @@ class Trainer:
                 # LR adaptation and best.pt agree on what improvement means.
                 if self.scheduler is not None:
                     self.scheduler.step(selected_score)
+
+                # capture LR after the scheduler so a reduction this epoch is reflected
+                current_lr = self.optimizer.param_groups[0]["lr"]
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -210,7 +231,7 @@ class Trainer:
                     is_best=is_best,
                 )
                 self._log_epoch(
-                    epoch_index, total_epochs, train_loss, val_loss, current_lr, rollout
+                    epoch_index, total_epochs, train_summary, val_loss, current_lr, rollout
                 )
                 last_rollout = rollout
 
@@ -334,6 +355,19 @@ class Trainer:
             )
         return [(cfg.training.multi_step_horizon, cfg.training.epochs)]
 
+    def _stage_clip_norm(self, stage_idx: int) -> float:
+        """Return the gradient-clip max-norm for the given curriculum stage.
+
+        In single-horizon mode there is one stage, so the configured
+        `gradient_clip_norm` is always used. In curriculum mode, an explicit
+        `curriculum_gradient_clip_norms` overrides it per stage; if the list
+        is None, every stage falls back to `gradient_clip_norm`.
+        """
+        cfg = self.cfg
+        if cfg.training.curriculum_gradient_clip_norms is not None:
+            return cfg.training.curriculum_gradient_clip_norms[stage_idx]
+        return cfg.training.gradient_clip_norm
+
     def _setup_model(self) -> nn.Module:
         """Build the model and optionally print a summary."""
         model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(self.device)
@@ -435,8 +469,23 @@ class Trainer:
 
     # --- epoch helpers ---
 
-    def _run_epoch(self, *, training: bool, verbose: bool) -> float:
-        """Run one train or validation epoch."""
+    def _run_epoch(self, *, training: bool, verbose: bool) -> EpochRunSummary:
+        """Run one train or validation epoch and return a summary.
+
+        Skip semantics differ for the two failure modes:
+            - non-finite loss respects `skip_nonfinite_batches`. With the
+              flag on, the batch is dropped before backward; with it off,
+              backward and `clip_grad_norm_` still run so the explosion is
+              visible (e.g. via the gradient norm in the next check).
+            - non-finite gradient norm is ALWAYS skipped. Stepping the
+              optimizer with NaN/Inf gradients is never useful and
+              corrupts every parameter, so this protection is unconditional.
+
+        `batch_idx` reflects the loader's batch position (1..len(loader))
+        so diagnostics keep their loader-relative meaning even when some
+        batches are skipped. `n_taken` only counts batches whose loss
+        contributed to the running mean.
+        """
         if training:
             self.model.train()
             loader = self.train_loader
@@ -445,14 +494,17 @@ class Trainer:
             loader = self.val_loader
 
         total_loss = 0.0
-        n_batches = 0
+        n_taken = 0
+        grad_norms: list[float] = []
+        n_clipped = 0
+        skipped_batches = 0
 
         phase = "train" if training else "val"
         batches = tqdm(loader, desc=phase, leave=False) if verbose else loader
 
         ctx = torch.enable_grad() if training else torch.no_grad()
         with ctx:
-            for inputs, targets in batches:
+            for batch_idx, (inputs, targets) in enumerate(batches, start=1):
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
 
@@ -462,14 +514,37 @@ class Trainer:
                 preds, loss, diag_targets = self._compute_loss(inputs, targets)
 
                 if training:
+                    if self.cfg.training.skip_nonfinite_batches and not torch.isfinite(loss).item():
+                        logger.warning("skipped batch: non-finite loss (%s)", loss.item())
+                        skipped_batches += 1
+                        self.optimizer.zero_grad(set_to_none=True)
+                        continue
+
                     self.optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), max_norm=self.current_clip_norm
+                    )
+
+                    # always skip on non-finite gradients; stepping corrupts every param
+                    if not torch.isfinite(grad_norm).item():
+                        logger.warning(
+                            "skipped batch: non-finite grad norm (%s)",
+                            grad_norm.item(),
+                        )
+                        skipped_batches += 1
+                        self.optimizer.zero_grad(set_to_none=True)
+                        continue
+
+                    grad_norm_value = float(grad_norm)
+                    grad_norms.append(grad_norm_value)
+                    if grad_norm_value > self.current_clip_norm:
+                        n_clipped += 1
                     self.optimizer.step()
 
                 batch_loss = loss.item()
                 total_loss += batch_loss
-                n_batches += 1
+                n_taken += 1
 
                 if training:
                     self.diagnostics.check_batch(
@@ -477,14 +552,33 @@ class Trainer:
                         diag_targets,
                         preds.detach(),
                         batch_loss,
-                        n_batches,
+                        batch_idx,
                         len(loader),
                     )
 
                 if verbose:
-                    batches.set_postfix(loss=f"{total_loss / n_batches:.6f}")
+                    batches.set_postfix(loss=f"{total_loss / n_taken:.6f}")
 
-        return total_loss / n_batches
+        avg_loss = total_loss / n_taken if n_taken > 0 else float("nan")
+
+        if not training:
+            return EpochRunSummary(loss=avg_loss)
+
+        if grad_norms:
+            return EpochRunSummary(
+                loss=avg_loss,
+                grad_norm_mean=float(np.mean(grad_norms)),
+                grad_norm_max=float(np.max(grad_norms)),
+                grad_clip_fraction=n_clipped / len(grad_norms),
+                skipped_batches=skipped_batches,
+            )
+
+        if skipped_batches > 0:
+            logger.warning(
+                "epoch ended with all %d batches skipped; train loss is nan",
+                skipped_batches,
+            )
+        return EpochRunSummary(loss=avg_loss, skipped_batches=skipped_batches)
 
     def _compute_loss(
         self,
@@ -584,7 +678,7 @@ class Trainer:
         self,
         epoch: int,
         total_epochs: int,
-        train_loss: float,
+        train_summary: EpochRunSummary,
         val_loss: float,
         lr: float,
         rollout: RolloutScore | None,
@@ -595,7 +689,12 @@ class Trainer:
         equals `cfg.training.epochs`; in curriculum mode it is the sum of
         `curriculum_epochs`. Computing it in `run` avoids the `epoch/0`
         rendering artefact that would otherwise show up under curriculum.
+
+        Gradient diagnostics for the epoch come from `train_summary` and are
+        only populated for training epochs that took at least one step.
         """
+        train_loss = train_summary.loss
+
         if self.csv_path is not None:
             metrics = EpochMetrics(
                 epoch=epoch,
@@ -608,6 +707,10 @@ class Trainer:
                     rollout.fraction_beating_baseline if rollout is not None else None
                 ),
                 final_ratio=rollout.final_ratio if rollout is not None else None,
+                grad_norm_mean=train_summary.grad_norm_mean,
+                grad_norm_max=train_summary.grad_norm_max,
+                grad_clip_fraction=train_summary.grad_clip_fraction,
+                skipped_batches=train_summary.skipped_batches,
             )
             append_metrics(self.csv_path, metrics)
 

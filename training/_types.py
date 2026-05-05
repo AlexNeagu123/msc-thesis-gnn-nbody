@@ -53,11 +53,20 @@ class TrainingParams:
     checkpoint_metric: str = "val_loss"
     curriculum_horizons: list[int] | None = None
     curriculum_epochs: list[int] | None = None
+    gradient_clip_norm: float = 10.0
+    curriculum_gradient_clip_norms: list[float] | None = None
+    skip_nonfinite_batches: bool = True
+    reset_optimizer_on_stage: bool = False
 
     def __post_init__(self) -> None:
         """Validate single-horizon vs curriculum field combinations."""
+        if self.gradient_clip_norm <= 0:
+            msg = f"gradient_clip_norm must be > 0, got {self.gradient_clip_norm}"
+            raise ValueError(msg)
+
         horizons = self.curriculum_horizons
         epochs_list = self.curriculum_epochs
+        clip_norms = self.curriculum_gradient_clip_norms
 
         if (horizons is None) != (epochs_list is None):
             msg = "curriculum_horizons and curriculum_epochs must both be set or both be None"
@@ -66,6 +75,12 @@ class TrainingParams:
         if horizons is None:
             if self.epochs <= 0:
                 msg = "epochs must be > 0 in single-horizon mode (no curriculum configured)"
+                raise ValueError(msg)
+            if clip_norms is not None:
+                msg = (
+                    "curriculum_gradient_clip_norms is only valid with a curriculum schedule; "
+                    "use gradient_clip_norm in single-horizon mode"
+                )
                 raise ValueError(msg)
             return
 
@@ -85,6 +100,17 @@ class TrainingParams:
         if any(e < 1 for e in epochs_list):  # type: ignore[union-attr]
             msg = f"every curriculum_epochs entry must be >= 1, got {epochs_list}"
             raise ValueError(msg)
+
+        if clip_norms is not None:
+            if len(clip_norms) != len(horizons):
+                msg = (
+                    f"curriculum_gradient_clip_norms ({len(clip_norms)}) and "
+                    f"curriculum_horizons ({len(horizons)}) must have the same length"
+                )
+                raise ValueError(msg)
+            if any(n <= 0 for n in clip_norms):
+                msg = f"every curriculum_gradient_clip_norms entry must be > 0, got {clip_norms}"
+                raise ValueError(msg)
 
 
 @dataclass
@@ -174,6 +200,27 @@ class TrainResult:
 
 
 @dataclass(frozen=True)
+class EpochRunSummary:
+    """Result returned by Trainer._run_epoch for one train or val epoch.
+
+    `loss` is the mean per-batch loss across the epoch, excluding any
+    batches that were skipped because their loss or gradient norm was
+    non-finite. Skipped batches do not contribute to the running mean.
+
+    Gradient diagnostics are populated only for training epochs.
+    Validation epochs leave them at None. When every training batch in an
+    epoch is skipped, `loss` is NaN and the three grad fields stay None
+    while `skipped_batches` records the count.
+    """
+
+    loss: float
+    grad_norm_mean: float | None = None
+    grad_norm_max: float | None = None
+    grad_clip_fraction: float | None = None
+    skipped_batches: int | None = None
+
+
+@dataclass(frozen=True)
 class RolloutScore:
     """Baseline-normalized rollout score on the validation set.
 
@@ -194,7 +241,11 @@ class EpochMetrics:
     """One row of the training metrics CSV.
 
     Rollout diagnostics are populated only when the trainer computes a
-    rollout score for the epoch. Empty strings render in the CSV when None.
+    rollout score for the epoch. Gradient diagnostics are populated only
+    for training epochs that took at least one optimizer step; an epoch
+    where every batch was skipped leaves the three grad-norm fields blank
+    while still recording the skip count. Empty strings render in the CSV
+    when None.
     """
 
     epoch: int
@@ -205,13 +256,18 @@ class EpochMetrics:
     dominance_horizon: int | None = None
     fraction_beating_baseline: float | None = None
     final_ratio: float | None = None
+    grad_norm_mean: float | None = None
+    grad_norm_max: float | None = None
+    grad_clip_fraction: float | None = None
+    skipped_batches: int | None = None
 
     @classmethod
     def csv_header(cls) -> str:
         """Return the CSV header line (no trailing newline)."""
         return (
             "epoch,train_loss,val_loss,lr,"
-            "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio"
+            "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
+            "grad_norm_mean,grad_norm_max,grad_clip_fraction,skipped_batches"
         )
 
     def to_csv_row(self) -> str:
@@ -224,7 +280,11 @@ class EpochMetrics:
             else f"{self.fraction_beating_baseline:.6f}"
         )
         fr = "" if self.final_ratio is None else f"{self.final_ratio:.6f}"
+        gnm = "" if self.grad_norm_mean is None else f"{self.grad_norm_mean:.6f}"
+        gnx = "" if self.grad_norm_max is None else f"{self.grad_norm_max:.6f}"
+        gcf = "" if self.grad_clip_fraction is None else f"{self.grad_clip_fraction:.6f}"
+        skip = "" if self.skipped_batches is None else str(self.skipped_batches)
         return (
             f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e},"
-            f"{rs},{dh},{fb},{fr}"
+            f"{rs},{dh},{fb},{fr},{gnm},{gnx},{gcf},{skip}"
         )

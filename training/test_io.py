@@ -117,7 +117,8 @@ def test_load_checkpoint_rejects_dict_missing_optimizer(tmp_path: Path) -> None:
 
 _HEADER = (
     "epoch,train_loss,val_loss,lr,"
-    "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio"
+    "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
+    "grad_norm_mean,grad_norm_max,grad_clip_fraction,skipped_batches"
 )
 
 
@@ -132,7 +133,8 @@ def test_init_metrics_csv_writes_header(tmp_path: Path) -> None:
 def test_append_metrics_writes_row(tmp_path: Path) -> None:
     """append_metrics adds one row in the EpochMetrics format.
 
-    Rollout columns are blank when no score is supplied (one-step training).
+    Rollout and gradient columns are blank when nothing is supplied
+    (e.g. constructing EpochMetrics outside the training loop).
     """
     path = tmp_path / "metrics.csv"
     init_metrics_csv(path)
@@ -141,8 +143,8 @@ def test_append_metrics_writes_row(tmp_path: Path) -> None:
 
     lines = path.read_text().splitlines()
     assert lines[0] == _HEADER
-    assert lines[1] == "1,0.500000,0.600000,1.00e-03,,,,"
-    assert lines[2] == "2,0.400000,0.550000,5.00e-04,,,,"
+    assert lines[1] == "1,0.500000,0.600000,1.00e-03,,,,,,,,"
+    assert lines[2] == "2,0.400000,0.550000,5.00e-04,,,,,,,,"
 
 
 def test_append_metrics_writes_rollout_row(tmp_path: Path) -> None:
@@ -164,7 +166,29 @@ def test_append_metrics_writes_rollout_row(tmp_path: Path) -> None:
     )
 
     lines = path.read_text().splitlines()
-    assert lines[1] == "1,0.500000,0.600000,1.00e-03,-0.123456,42,0.789000,1.500000"
+    assert lines[1] == "1,0.500000,0.600000,1.00e-03,-0.123456,42,0.789000,1.500000,,,,"
+
+
+def test_append_metrics_writes_grad_diagnostics_row(tmp_path: Path) -> None:
+    """Grad diagnostics fill the four trailing columns; rollout columns stay blank."""
+    path = tmp_path / "metrics.csv"
+    init_metrics_csv(path)
+    append_metrics(
+        path,
+        EpochMetrics(
+            epoch=1,
+            train_loss=0.5,
+            val_loss=0.6,
+            lr=1e-3,
+            grad_norm_mean=0.250000,
+            grad_norm_max=1.875000,
+            grad_clip_fraction=0.125,
+            skipped_batches=2,
+        ),
+    )
+
+    lines = path.read_text().splitlines()
+    assert lines[1] == "1,0.500000,0.600000,1.00e-03,,,,,0.250000,1.875000,0.125000,2"
 
 
 def test_load_config_handles_yaml_default_keys(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 import math
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import h5py
 import numpy as np
@@ -14,6 +15,7 @@ from training._types import (
     Checkpoint,
     CheckpointConfig,
     DataConfig,
+    EpochRunSummary,
     LoggingConfig,
     ModelConfig,
     RolloutScore,
@@ -140,7 +142,8 @@ def test_csv_log_written(make_cfg: TrainConfig) -> None:
     lines = csv_path.read_text().strip().split("\n")
     assert lines[0] == (
         "epoch,train_loss,val_loss,lr,"
-        "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio"
+        "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
+        "grad_norm_mean,grad_norm_max,grad_clip_fraction,skipped_batches"
     )
     assert len(lines) == make_cfg.training.epochs + 1
 
@@ -713,6 +716,349 @@ def test_training_params_rejects_non_positive_epochs() -> None:
         _params(curriculum_horizons=[1, 5], curriculum_epochs=[3, 0])
 
 
+# --- gradient-clip and stability-knob validation ---
+
+
+def test_training_params_default_gradient_clip_is_ten() -> None:
+    """Default preserves the previously hard-coded value."""
+    params = _params(epochs=1)
+
+    assert params.gradient_clip_norm == 10.0
+    assert params.curriculum_gradient_clip_norms is None
+    assert params.skip_nonfinite_batches is True
+    assert params.reset_optimizer_on_stage is False
+
+
+def test_training_params_rejects_non_positive_gradient_clip_norm() -> None:
+    """Clipping at zero or below is meaningless and rejected."""
+    with pytest.raises(ValueError, match="gradient_clip_norm must be > 0"):
+        _params(epochs=1, gradient_clip_norm=0.0)
+    with pytest.raises(ValueError, match="gradient_clip_norm must be > 0"):
+        _params(epochs=1, gradient_clip_norm=-1.0)
+
+
+def test_training_params_rejects_curriculum_clip_norms_in_single_horizon_mode() -> None:
+    """A curriculum-only field set without a schedule is a config bug, not a no-op."""
+    with pytest.raises(
+        ValueError,
+        match="curriculum_gradient_clip_norms is only valid with a curriculum schedule",
+    ):
+        _params(epochs=1, curriculum_gradient_clip_norms=[1.0])
+
+
+def test_training_params_curriculum_accepts_clip_norms_none_and_falls_back() -> None:
+    """Curriculum without explicit per-stage clipping uses gradient_clip_norm."""
+    params = _params(
+        curriculum_horizons=[1, 5],
+        curriculum_epochs=[3, 2],
+        gradient_clip_norm=2.5,
+    )
+
+    assert params.curriculum_gradient_clip_norms is None
+    assert params.gradient_clip_norm == 2.5
+
+
+def test_training_params_curriculum_accepts_matching_clip_norms() -> None:
+    """A per-stage clip list of the same length as horizons is the happy path."""
+    params = _params(
+        curriculum_horizons=[1, 5, 10],
+        curriculum_epochs=[3, 2, 1],
+        curriculum_gradient_clip_norms=[1.0, 0.5, 0.3],
+    )
+
+    assert params.curriculum_gradient_clip_norms == [1.0, 0.5, 0.3]
+
+
+def test_training_params_rejects_mismatched_curriculum_clip_norms_length() -> None:
+    """Per-stage clip list length must match the number of stages."""
+    with pytest.raises(
+        ValueError, match=r"curriculum_gradient_clip_norms .* must have the same length"
+    ):
+        _params(
+            curriculum_horizons=[1, 5, 10],
+            curriculum_epochs=[3, 2, 1],
+            curriculum_gradient_clip_norms=[1.0, 0.5],
+        )
+
+
+def test_training_params_rejects_non_positive_curriculum_clip_norms() -> None:
+    """Every per-stage clip value must be strictly positive."""
+    with pytest.raises(ValueError, match="curriculum_gradient_clip_norms entry must be > 0"):
+        _params(
+            curriculum_horizons=[1, 5],
+            curriculum_epochs=[3, 2],
+            curriculum_gradient_clip_norms=[1.0, 0.0],
+        )
+    with pytest.raises(ValueError, match="curriculum_gradient_clip_norms entry must be > 0"):
+        _params(
+            curriculum_horizons=[1, 5],
+            curriculum_epochs=[3, 2],
+            curriculum_gradient_clip_norms=[1.0, -0.1],
+        )
+
+
+def test_training_params_stability_flags_round_trip() -> None:
+    """Both stability booleans accept non-default values without further validation."""
+    params = _params(
+        epochs=1,
+        skip_nonfinite_batches=False,
+        reset_optimizer_on_stage=True,
+    )
+
+    assert params.skip_nonfinite_batches is False
+    assert params.reset_optimizer_on_stage is True
+
+
+# --- gradient clipping and skip-nonfinite trainer behavior ---
+
+
+def _captured_clip_norms(spy: object) -> list[float]:
+    """Pull the max_norm argument out of every recorded clip_grad_norm_ call."""
+    norms: list[float] = []
+    for call in spy.call_args_list:  # type: ignore[attr-defined]
+        if "max_norm" in call.kwargs:
+            norms.append(call.kwargs["max_norm"])
+        else:
+            norms.append(call.args[1])
+    return norms
+
+
+def test_clip_norm_uses_configured_value(make_cfg: TrainConfig) -> None:
+    """The configured gradient_clip_norm is what reaches clip_grad_norm_."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, epochs=1, gradient_clip_norm=2.5),
+    )
+
+    with patch.object(
+        torch.nn.utils, "clip_grad_norm_", wraps=torch.nn.utils.clip_grad_norm_
+    ) as spy:
+        train(cfg, model=DummyModel())
+
+    norms = _captured_clip_norms(spy)
+    assert norms, "expected at least one clip_grad_norm_ call"
+    assert all(n == 2.5 for n in norms), norms
+
+
+def test_curriculum_clip_norms_applied_per_stage_in_order(make_cfg: TrainConfig) -> None:
+    """Each curriculum stage uses its own clip norm; stage order is preserved."""
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            epochs=0,
+            curriculum_horizons=[1, 1],
+            curriculum_epochs=[1, 1],
+            curriculum_gradient_clip_norms=[3.0, 0.5],
+        ),
+    )
+
+    with patch.object(
+        torch.nn.utils, "clip_grad_norm_", wraps=torch.nn.utils.clip_grad_norm_
+    ) as spy:
+        train(cfg, model=DummyModel())
+
+    norms = _captured_clip_norms(spy)
+    assert 3.0 in norms
+    assert 0.5 in norms
+    last_3 = max(i for i, v in enumerate(norms) if v == 3.0)
+    first_05 = norms.index(0.5)
+    assert last_3 < first_05, f"stage order broken: {norms}"
+
+
+def test_curriculum_without_clip_norms_falls_back_to_default(make_cfg: TrainConfig) -> None:
+    """Curriculum mode with no per-stage list uses gradient_clip_norm everywhere."""
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            epochs=0,
+            gradient_clip_norm=4.0,
+            curriculum_horizons=[1, 1],
+            curriculum_epochs=[1, 1],
+        ),
+    )
+
+    with patch.object(
+        torch.nn.utils, "clip_grad_norm_", wraps=torch.nn.utils.clip_grad_norm_
+    ) as spy:
+        train(cfg, model=DummyModel())
+
+    norms = _captured_clip_norms(spy)
+    assert norms
+    assert all(n == 4.0 for n in norms), norms
+
+
+def _inject_nan_loss_on_first_train_batch(
+    trainer: Trainer,
+) -> dict:
+    """Wrap trainer._compute_loss so the first training batch returns a NaN loss.
+
+    The injection keeps the model's grad path intact (multiplies by nan) so
+    `loss.backward()` still works when the trainer falls through. Validation
+    batches are untouched. Returns a dict with `injected: bool` for assertions.
+    """
+    state = {"injected": False}
+    original = trainer._compute_loss
+
+    def patched(
+        inputs: torch.Tensor, targets: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        preds, loss, diag = original(inputs, targets)
+        if trainer.model.training and not state["injected"]:
+            state["injected"] = True
+            loss = loss * float("nan")
+        return preds, loss, diag
+
+    trainer._compute_loss = patched  # type: ignore[method-assign]
+    return state
+
+
+def test_skip_nonfinite_loss_skips_optimizer_step(make_cfg: TrainConfig) -> None:
+    """A NaN-loss batch skips backward+step when skip_nonfinite_batches is on."""
+    cfg = replace(make_cfg, training=replace(make_cfg.training, epochs=1))
+    trainer = Trainer(cfg, model=DummyModel())
+
+    state = _inject_nan_loss_on_first_train_batch(trainer)
+    n_train_batches = len(trainer.train_loader)
+
+    with patch.object(trainer.optimizer, "step", wraps=trainer.optimizer.step) as step_spy:
+        trainer.run()
+
+    assert state["injected"]
+    assert step_spy.call_count == n_train_batches - 1
+
+
+@pytest.mark.parametrize("skip_flag", [True, False])
+def test_nan_grad_norm_always_skips_optimizer_step(make_cfg: TrainConfig, skip_flag: bool) -> None:
+    """Non-finite grad norm skips optimizer.step regardless of skip_nonfinite_batches.
+
+    Stepping with NaN/Inf gradients corrupts every parameter, so this guard
+    is unconditional. The flag only controls whether non-finite *loss* is
+    pre-empted before backward; non-finite *gradients* are never tolerated.
+    """
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, epochs=1, skip_nonfinite_batches=skip_flag),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+
+    state = {"injected": False}
+    original_clip = torch.nn.utils.clip_grad_norm_
+
+    def patched_clip(*args: object, **kwargs: object) -> torch.Tensor:
+        if trainer.model.training and not state["injected"]:
+            state["injected"] = True
+            return torch.tensor(float("nan"))
+        return original_clip(*args, **kwargs)
+
+    n_train_batches = len(trainer.train_loader)
+
+    with (
+        patch.object(torch.nn.utils, "clip_grad_norm_", side_effect=patched_clip),
+        patch.object(trainer.optimizer, "step", wraps=trainer.optimizer.step) as step_spy,
+    ):
+        trainer.run()
+
+    assert state["injected"]
+    assert step_spy.call_count == n_train_batches - 1
+
+
+def test_skip_disabled_invokes_clip_but_grad_check_still_blocks_step(
+    make_cfg: TrainConfig,
+) -> None:
+    """skip=False reaches backward+clip on a NaN-loss batch, but the step is still blocked.
+
+    With skipping off, the loss-level guard does not fire, so backward and
+    `clip_grad_norm_` run. The resulting non-finite grad norm is then caught
+    by the unconditional grad-level skip, so optimizer.step is not called.
+    """
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, epochs=1, skip_nonfinite_batches=False),
+    )
+    trainer = Trainer(cfg, model=DummyModel())
+    state = _inject_nan_loss_on_first_train_batch(trainer)
+    n_train_batches = len(trainer.train_loader)
+
+    with (
+        patch.object(
+            torch.nn.utils, "clip_grad_norm_", wraps=torch.nn.utils.clip_grad_norm_
+        ) as clip_spy,
+        patch.object(trainer.optimizer, "step", wraps=trainer.optimizer.step) as step_spy,
+    ):
+        trainer.run()
+
+    assert state["injected"]
+    # backward+clip ran for every batch (no loss-level pre-emption)
+    assert clip_spy.call_count == n_train_batches
+    # NaN gradients still blocked the optimizer step
+    assert step_spy.call_count == n_train_batches - 1
+
+
+def test_diagnostics_batch_index_reflects_loader_position_after_skip(
+    make_cfg: TrainConfig,
+) -> None:
+    """check_batch sees the original loader index even when earlier batches were skipped."""
+    cfg = replace(make_cfg, training=replace(make_cfg.training, epochs=1))
+    trainer = Trainer(cfg, model=DummyModel())
+    state = _inject_nan_loss_on_first_train_batch(trainer)
+
+    seen_indices: list[int] = []
+    original = trainer.diagnostics.check_batch
+
+    def spy(
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        preds: torch.Tensor,
+        batch_loss: float,
+        batch_idx: int,
+        n_batches: int,
+    ) -> None:
+        seen_indices.append(batch_idx)
+        original(inputs, targets, preds, batch_loss, batch_idx, n_batches)
+
+    trainer.diagnostics.check_batch = spy  # type: ignore[method-assign]
+
+    n_train_batches = len(trainer.train_loader)
+    trainer.run()
+
+    assert state["injected"]
+    # batch 1 was skipped via NaN-loss; diagnostics never sees it,
+    # remaining calls keep their loader-position indices in order.
+    assert seen_indices == list(range(2, n_train_batches + 1))
+
+
+def test_run_epoch_returns_populated_summary_for_training(make_cfg: TrainConfig) -> None:
+    """A training _run_epoch reports loss, mean/max grad norm, clip fraction, skips."""
+    trainer = Trainer(make_cfg, model=DummyModel())
+
+    summary = trainer._run_epoch(training=True, verbose=False)
+
+    assert isinstance(summary, EpochRunSummary)
+    assert math.isfinite(summary.loss)
+    assert summary.grad_norm_mean is not None
+    assert summary.grad_norm_max is not None
+    assert summary.grad_norm_max >= summary.grad_norm_mean
+    assert summary.grad_clip_fraction is not None
+    assert 0.0 <= summary.grad_clip_fraction <= 1.0
+    assert summary.skipped_batches == 0
+
+
+def test_run_epoch_summary_has_no_grad_diagnostics_for_validation(make_cfg: TrainConfig) -> None:
+    """A validation _run_epoch leaves all gradient diagnostics at None."""
+    trainer = Trainer(make_cfg, model=DummyModel())
+
+    summary = trainer._run_epoch(training=False, verbose=False)
+
+    assert isinstance(summary, EpochRunSummary)
+    assert math.isfinite(summary.loss)
+    assert summary.grad_norm_mean is None
+    assert summary.grad_norm_max is None
+    assert summary.grad_clip_fraction is None
+    assert summary.skipped_batches is None
+
+
 # --- checkpoint_metric and rollout-score wiring ---
 
 
@@ -771,16 +1117,63 @@ def test_checkpoint_metric_rejects_unknown(make_cfg: TrainConfig) -> None:
 
 
 def test_csv_columns_blank_for_val_loss_metric(make_cfg: TrainConfig) -> None:
-    """In the default mode, rollout columns appear in the header but rows are empty."""
+    """In val_loss mode, rollout columns are blank but grad-diagnostic columns are filled."""
     train(make_cfg, model=DummyModel())
 
     run_dir = _find_run_dir(make_cfg.logging.dir)
     lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
 
-    # one header + one row per epoch; trailing four columns blank in every data row
+    # column layout: 4 base | 4 rollout (4..7) | 4 grad (8..11)
     for row in lines[1:]:
         cells = row.split(",")
-        assert cells[-4:] == ["", "", "", ""]
+        assert len(cells) == 12
+        # rollout block is empty (no rollout score in val_loss mode)
+        assert cells[4:8] == ["", "", "", ""]
+        # grad block is populated for every training epoch (mean/max/fraction/skipped)
+        assert all(c != "" for c in cells[8:12])
+
+
+def test_csv_grad_diagnostics_have_finite_values_per_epoch(make_cfg: TrainConfig) -> None:
+    """Grad columns from a real training epoch are finite numbers in their expected ranges."""
+    train(make_cfg, model=DummyModel())
+
+    run_dir = _find_run_dir(make_cfg.logging.dir)
+    lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
+
+    for row in lines[1:]:
+        cells = row.split(",")
+        gnm, gnx, gcf, skip = cells[8], cells[9], cells[10], cells[11]
+        # values parse as finite floats / ints
+        assert math.isfinite(float(gnm))
+        assert math.isfinite(float(gnx))
+        assert math.isfinite(float(gcf))
+        # max >= mean for any non-empty grad-norm sample
+        assert float(gnx) >= float(gnm)
+        # clip fraction in [0, 1]; skip count >= 0
+        assert 0.0 <= float(gcf) <= 1.0
+        assert int(skip) >= 0
+
+
+def test_csv_skipped_batches_column_reports_count_when_nan_loss_skipped(
+    make_cfg: TrainConfig,
+) -> None:
+    """When a batch is dropped via nan-loss skip, that epoch's CSV row records skipped=1."""
+    cfg = replace(make_cfg, training=replace(make_cfg.training, epochs=1))
+    trainer = Trainer(cfg, model=DummyModel())
+    state = _inject_nan_loss_on_first_train_batch(trainer)
+    trainer.run()
+
+    assert state["injected"]
+    run_dir = _find_run_dir(cfg.logging.dir)
+    lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
+
+    cells = lines[1].split(",")
+    # exactly one batch was injected with NaN loss
+    assert cells[11] == "1"
+    # remaining grad cols still populated by the surviving batches
+    assert cells[8] != ""
+    assert cells[9] != ""
+    assert cells[10] != ""
 
 
 def test_csv_columns_populated_for_rollout_score_metric(
@@ -1000,6 +1393,97 @@ def test_curriculum_best_checkpoint_indexes_globally(make_cfg: TrainConfig) -> N
 
     assert best_ckpt.epoch == 3
     assert best_ckpt.selected_score == pytest.approx(0.1)
+
+
+# --- optimizer reset on stage transition ---
+
+
+def test_optimizer_reset_creates_new_instance_on_horizon_change(make_cfg: TrainConfig) -> None:
+    """With reset_optimizer_on_stage=True, a horizon transition swaps in a fresh optimizer."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(cfg.training, reset_optimizer_on_stage=True),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+    initial_scheduler = trainer.scheduler
+
+    trainer.run()
+
+    # at the stage 1 -> stage 2 boundary the trainer rebuilt both
+    assert trainer.optimizer is not initial_optimizer
+    # scheduler is None in this fixture (SchedulerConfig.enabled=False), so it stays None
+    assert trainer.scheduler is initial_scheduler
+
+
+def test_optimizer_preserved_across_curriculum_stages_by_default(make_cfg: TrainConfig) -> None:
+    """Default (reset_optimizer_on_stage=False) keeps Adam state continuous across stages."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+
+    trainer.run()
+
+    assert trainer.optimizer is initial_optimizer
+
+
+def test_optimizer_not_reset_in_single_horizon_mode_even_with_flag(make_cfg: TrainConfig) -> None:
+    """Single-horizon mode has no transitions, so the flag is a no-op."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, epochs=2, reset_optimizer_on_stage=True),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+
+    trainer.run()
+
+    assert trainer.optimizer is initial_optimizer
+
+
+def test_optimizer_not_reset_when_curriculum_horizon_repeats(make_cfg: TrainConfig) -> None:
+    """Reset is gated on horizon change; identical-horizon stages keep optimizer state.
+
+    No real config schedules the same horizon twice, but encoding the gating
+    contract here keeps the behavior unambiguous.
+    """
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 1], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(cfg.training, reset_optimizer_on_stage=True),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+
+    trainer.run()
+
+    assert trainer.optimizer is initial_optimizer
+
+
+def test_optimizer_reset_logs_horizon_at_transition(
+    make_cfg: TrainConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The reset emits a log line naming the new horizon."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 5], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(cfg.training, reset_optimizer_on_stage=True),
+    )
+
+    with caplog.at_level("INFO", logger="training.train"):
+        train(cfg, model=DummyModel())
+
+    matching = [
+        r
+        for r in caplog.records
+        if "optimizer reset at stage transition" in r.getMessage() and "horizon=5" in r.getMessage()
+    ]
+    assert len(matching) == 1, [r.getMessage() for r in caplog.records]
 
 
 # --- artifact dir override ---

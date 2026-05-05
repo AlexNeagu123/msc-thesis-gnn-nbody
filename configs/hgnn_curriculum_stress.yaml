@@ -19,11 +19,8 @@ training:
   device: auto
   multi_step_gamma: 1.0
   checkpoint_metric: rollout_score
-  curriculum_horizons: [1, 5, 10, 20]
-  curriculum_epochs:   [30, 20, 10,  5]
-  gradient_clip_norm: 1.0
-  skip_nonfinite_batches: true
-  reset_optimizer_on_stage: false
+  curriculum_horizons: [5, 10, 20]
+  curriculum_epochs:   [2, 2, 1]
 
 scheduler:
   enabled: true
@@ -33,8 +30,8 @@ scheduler:
 
 checkpointing:
   enabled: true
-  dir: checkpoints/hgnn_curriculum/
+  dir: checkpoints/hgnn_curriculum_stress/
 
 logging:
   enabled: true
-  dir: logs/hgnn_curriculum/
+  dir: logs/hgnn_curriculum_stress/
