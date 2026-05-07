@@ -7,6 +7,7 @@ References:
     - EGNN reference implementation: https://github.com/vgsatorras/egnn
     - HGNN (Bishnoi et al. 2023), repulsive gravity setup: https://arxiv.org/abs/2307.05299
     - Architecture specs (data specification): ../../../edu/architecture-specs.md
+    - Stratified d_min binning: data/encounters.py
 """
 
 import argparse
@@ -16,7 +17,18 @@ import numpy as np
 import rebound
 
 from data._io import load_data_config, write_trajectories
-from data._types import DataGenConfig, SimulationParams, Trajectories, TrajectoryMetadata
+from data._types import (
+    DataGenConfig,
+    SimulationParams,
+    SplitConfig,
+    Trajectories,
+    TrajectoryMetadata,
+)
+from data.encounters import (
+    assign_encounter_bin,
+    min_pairwise_distance_over_time,
+    target_counts_from_distribution,
+)
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -38,21 +50,20 @@ class Generator:
                 split.name,
                 split.n_trajectories,
             )
-            self._generate_split(
-                n_trajectories=split.n_trajectories,
-                output_path=split.path,
-                seed=split.seed,
-            )
+            self._generate_split(split)
 
-    def _generate_split(
-        self,
-        n_trajectories: int,
-        output_path: str,
-        seed: int,
-    ) -> None:
-        """Generate one dataset split and save it to HDF5."""
-        rng = np.random.default_rng(seed)
+    def _generate_split(self, split: SplitConfig) -> None:
+        """Dispatch to uniform (legacy) or stratified generation."""
+        if self.cfg.stratified is None:
+            self._generate_uniform_split(split)
+        else:
+            self._generate_stratified_split(split)
+
+    def _generate_uniform_split(self, split: SplitConfig) -> None:
+        """Generate one dataset split with the legacy first-N-accepted policy."""
+        rng = np.random.default_rng(split.seed)
         n_steps = int(self.params.t_end / self.params.dt)
+        n_trajectories = split.n_trajectories
 
         all_states = np.zeros((n_trajectories, n_steps, self.params.n_particles, 5))
         all_energies = np.zeros((n_trajectories, n_steps))
@@ -83,9 +94,176 @@ class Generator:
             all_states,
             all_energies,
             n_trajectories,
-            output_path,
-            seed,
+            split.path,
+            split.seed,
             attempted,
+        )
+
+    def _generate_stratified_split(self, split: SplitConfig) -> None:
+        """Generate one split with per-bin acceptance quotas.
+
+        Repeatedly simulates a candidate trajectory, computes its
+        true minimum pairwise distance over time, classifies it into
+        the configured encounter bins, and keeps it iff that bin's
+        quota for this split is not yet full. The accepted trajectories
+        are shuffled with the same split RNG before saving so training
+        is mixed and val/test are not grouped by bin.
+
+        The candidate-attempt cap (`StratifiedConfig.max_attempts` if set,
+        otherwise `max(10000, n_trajectories * 2000)`) prevents silently
+        infinite loops when an extreme bin is rare under the configured
+        Gaussian initial conditions.
+        """
+        if self.cfg.stratified is None:  # narrowing for type checkers; caller dispatched
+            msg = "_generate_stratified_split called without a stratified config"
+            raise RuntimeError(msg)
+        strat = self.cfg.stratified
+
+        distributions = {
+            "train": strat.train_distribution,
+            "val": strat.val_distribution,
+            "test": strat.test_distribution,
+        }
+        if split.name not in distributions:
+            msg = (
+                f"stratified mode requires split name in {sorted(distributions)}; "
+                f"got {split.name!r}"
+            )
+            raise ValueError(msg)
+
+        targets = target_counts_from_distribution(split.n_trajectories, distributions[split.name])
+        bin_name_to_id = {b.name: i for i, b in enumerate(strat.bins)}
+
+        logger.info(
+            "stratified %s | per-bin targets: %s | total=%d",
+            split.name,
+            targets,
+            split.n_trajectories,
+        )
+
+        rng = np.random.default_rng(split.seed)
+        accepted_states: list[np.ndarray] = []
+        accepted_energies: list[np.ndarray] = []
+        accepted_bin_ids: list[int] = []
+        accepted_bin_names: list[str] = []
+        accepted_distances: list[float] = []
+
+        accepted_per_bin = {b.name: 0 for b in strat.bins}
+        over_quota_per_bin = {b.name: 0 for b in strat.bins}
+        simulator_rejections = 0
+        attempted = 0
+
+        # safer default than n*500: rare bins (e.g. smooth >= 0.2 under the
+        # current Gaussian setup is roughly 5-6%) need many candidate draws
+        # to fill quotas; explicit StratifiedConfig.max_attempts overrides.
+        max_attempts = strat.max_attempts or max(10000, split.n_trajectories * 2000)
+        progress_step = max(1, split.n_trajectories // 20)
+
+        while sum(accepted_per_bin.values()) < split.n_trajectories:
+            if attempted >= max_attempts:
+                remaining = {
+                    name: targets[name] - accepted_per_bin[name]
+                    for name in targets
+                    if accepted_per_bin[name] < targets[name]
+                }
+                msg = (
+                    f"stratified generation hit max_attempts={max_attempts} for split "
+                    f"{split.name!r} with quotas unmet; "
+                    f"accepted={accepted_per_bin}, remaining={remaining}"
+                )
+                raise RuntimeError(msg)
+
+            attempted += 1
+            result = self._simulate_trajectory(rng)
+            if result is None:
+                simulator_rejections += 1
+                continue
+
+            states, energies = result
+            d_min = min_pairwise_distance_over_time(states)
+            bin_name = assign_encounter_bin(d_min, strat.bins)
+
+            if accepted_per_bin[bin_name] >= targets[bin_name]:
+                over_quota_per_bin[bin_name] += 1
+                continue
+
+            accepted_states.append(states)
+            accepted_energies.append(energies)
+            accepted_bin_ids.append(bin_name_to_id[bin_name])
+            accepted_bin_names.append(bin_name)
+            accepted_distances.append(d_min)
+            accepted_per_bin[bin_name] += 1
+
+            total_accepted = sum(accepted_per_bin.values())
+            if total_accepted % progress_step == 0 or total_accepted == split.n_trajectories:
+                logger.info(
+                    "%s: %d/%d (attempted=%d, sim_rejected=%d, over_quota=%d) | per-bin=%s",
+                    split.name,
+                    total_accepted,
+                    split.n_trajectories,
+                    attempted,
+                    simulator_rejections,
+                    sum(over_quota_per_bin.values()),
+                    accepted_per_bin,
+                )
+
+        # shuffle so training is mixed and val/test rows are not grouped by bin
+        permutation = rng.permutation(split.n_trajectories)
+        if accepted_states:
+            states_arr = np.stack(accepted_states, axis=0)[permutation]
+            energies_arr = np.stack(accepted_energies, axis=0)[permutation]
+            bin_ids_arr = np.array(accepted_bin_ids, dtype=np.int64)[permutation]
+            bin_names_arr = np.array(accepted_bin_names)[permutation]
+            distances_arr = np.array(accepted_distances, dtype=np.float64)[permutation]
+        else:
+            # zero-trajectory split: emit empty arrays rather than crashing on np.stack
+            n_steps = int(self.params.t_end / self.params.dt)
+            states_arr = np.zeros((0, n_steps, self.params.n_particles, 5), dtype=np.float64)
+            energies_arr = np.zeros((0, n_steps), dtype=np.float64)
+            bin_ids_arr = np.array([], dtype=np.int64)
+            bin_names_arr = np.array([], dtype=object)
+            distances_arr = np.array([], dtype=np.float64)
+
+        # candidate-discard rate: combines simulator rejections AND over-quota
+        # discards, so it is broader than the uniform path's rejection_rate.
+        rejection_rate = 1 - split.n_trajectories / attempted if attempted > 0 else 0.0
+        metadata = TrajectoryMetadata(
+            n_trajectories=split.n_trajectories,
+            n_particles=self.params.n_particles,
+            n_steps=states_arr.shape[1],
+            t_end=self.params.t_end,
+            dt=self.params.dt,
+            G=self.params.G,
+            mass=self.params.mass,
+            min_distance=self.params.min_distance,
+            pos_scale=self.params.pos_scale,
+            vel_scale=self.params.vel_scale,
+            seed=split.seed,
+            rejection_rate=rejection_rate,
+        )
+        write_trajectories(
+            Path(split.path),
+            Trajectories(
+                states=states_arr,
+                energies=energies_arr,
+                metadata=metadata,
+                encounter_bin_id=bin_ids_arr,
+                encounter_bin_name=bin_names_arr,
+                min_pairwise_distance=distances_arr,
+                encounter_bins=strat.bins,
+            ),
+        )
+
+        logger.info(
+            "saved %d stratified trajectories to %s | per-bin=%s | "
+            "sim_rejected=%d, over_quota=%s, attempted=%d, rejection_rate=%.1f%%",
+            split.n_trajectories,
+            split.path,
+            accepted_per_bin,
+            simulator_rejections,
+            over_quota_per_bin,
+            attempted,
+            rejection_rate * 100,
         )
 
     def _simulate_trajectory(
