@@ -32,6 +32,7 @@ from training._io import (
     save_checkpoint,
 )
 from training._types import (
+    BucketRolloutScore,
     Checkpoint,
     EpochMetrics,
     EpochRunSummary,
@@ -40,7 +41,7 @@ from training._types import (
     TrainResult,
 )
 from training.diagnostics import TrainingDiagnostics
-from training.rollout_score import RolloutScoreEvaluator
+from training.rollout_score import BucketRolloutScoreEvaluator, RolloutScoreEvaluator
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -48,6 +49,23 @@ logger = get_logger(__name__)
 
 # re-exported so existing callers `from training.train import load_config` keep working
 __all__ = ["Trainer", "apply_artifact_dir", "build_model", "load_config", "train"]
+
+
+def _format_rollout_or_bucket(
+    rollout: RolloutScore | None,
+    bucket: BucketRolloutScore | None,
+) -> str:
+    """Render the per-stage rollout score for log lines.
+
+    Returns the single-curve score in `rollout_score` mode, the macro score
+    in `bucket_macro_rollout_score` mode, and "n/a" when neither evaluator
+    is in use (val_loss mode).
+    """
+    if rollout is not None:
+        return f"{rollout.score:+.4f}"
+    if bucket is not None:
+        return f"{bucket.macro:+.4f}"
+    return "n/a"
 
 
 def build_model(
@@ -97,9 +115,10 @@ class Trainer:
                 optimizer, scheduler, run_id, logs, and checkpoint dir are NOT
                 inherited; they all start fresh from the current config.
         """
-        if cfg.training.checkpoint_metric not in ("val_loss", "rollout_score"):
+        valid_metrics = ("val_loss", "rollout_score", "bucket_macro_rollout_score")
+        if cfg.training.checkpoint_metric not in valid_metrics:
             msg = (
-                f"checkpoint_metric must be 'val_loss' or 'rollout_score', "
+                f"checkpoint_metric must be one of {valid_metrics}, "
                 f"got {cfg.training.checkpoint_metric!r}"
             )
             raise ValueError(msg)
@@ -126,6 +145,36 @@ class Trainer:
         self.loss_fn = self._build_loss_fn(cfg.training.loss)
         self.optimizer, self.scheduler = self._setup_optimizer()
         self.ckpt_dir = self._setup_checkpointing()
+
+        # Rollout evaluators are constructed before logging so the CSV header
+        # can be widened with bin_order in bucket mode. Only one of the two is
+        # ever non-None per run; the third metric (val_loss) leaves both None.
+        self.rollout_evaluator: RolloutScoreEvaluator | None = None
+        self.bucket_evaluator: BucketRolloutScoreEvaluator | None = None
+        self.bucket_bin_order: tuple[str, ...] = ()
+        if cfg.training.checkpoint_metric == "rollout_score":
+            self.rollout_evaluator = RolloutScoreEvaluator(
+                val_path=cfg.data.val_path,
+                train_path=cfg.data.train_path,
+                dt=cfg.data.dt,
+                device=self.device,
+            )
+            logger.info("checkpoint metric: rollout_score (evaluator constructed lazily)")
+        elif cfg.training.checkpoint_metric == "bucket_macro_rollout_score":
+            self.bucket_evaluator = BucketRolloutScoreEvaluator(
+                val_path=cfg.data.val_path,
+                train_path=cfg.data.train_path,
+                dt=cfg.data.dt,
+                device=self.device,
+            )
+            self.bucket_bin_order = self.bucket_evaluator.bin_order
+            logger.info(
+                "checkpoint metric: bucket_macro_rollout_score | bins=%s",
+                self.bucket_bin_order,
+            )
+        else:
+            logger.info("checkpoint metric: val_loss")
+
         self.csv_path = self._setup_logging()
 
         diag_dir = self.csv_path.parent if self.csv_path is not None else None
@@ -135,18 +184,6 @@ class Trainer:
             log_dir=diag_dir,
             dataset=self.train_loader.dataset,
         )
-
-        self.rollout_evaluator: RolloutScoreEvaluator | None = None
-        if cfg.training.checkpoint_metric == "rollout_score":
-            self.rollout_evaluator = RolloutScoreEvaluator(
-                val_path=cfg.data.val_path,
-                train_path=cfg.data.train_path,
-                dt=cfg.data.dt,
-                device=self.device,
-            )
-            logger.info("checkpoint metric: rollout_score (evaluator constructed lazily)")
-        else:
-            logger.info("checkpoint metric: val_loss")
 
     def run(self) -> TrainResult:
         """Execute the full training loop, stage by stage when curriculum is set."""
@@ -159,6 +196,8 @@ class Trainer:
         val_history: list[float] = []
         last_rollout: RolloutScore | None = None
         epoch_index = 0
+
+        last_bucket: BucketRolloutScore | None = None
 
         stages = self._stages()
         total_epochs = sum(n for _, n in stages)
@@ -176,7 +215,7 @@ class Trainer:
             self.current_clip_norm = self._stage_clip_norm(stage_idx)
 
             stage_lr = self.optimizer.param_groups[0]["lr"]
-            score_before = f"{last_rollout.score:+.4f}" if last_rollout is not None else "n/a"
+            score_before = _format_rollout_or_bucket(last_rollout, last_bucket)
             logger.info(
                 "stage %d/%d start | horizon=%d | epochs %d..%d | lr=%.2e "
                 "| clip=%.2f | rscore_before=%s",
@@ -200,11 +239,20 @@ class Trainer:
                 train_history.append(train_loss)
                 val_history.append(val_loss)
 
-                rollout = (
-                    self.rollout_evaluator.score(self.model) if self.rollout_evaluator else None
-                )
+                rollout: RolloutScore | None = None
+                bucket: BucketRolloutScore | None = None
+                if self.rollout_evaluator is not None:
+                    rollout = self.rollout_evaluator.score(self.model)
+                elif self.bucket_evaluator is not None:
+                    bucket = self.bucket_evaluator.score(self.model)
+
                 selected_metric = cfg.training.checkpoint_metric
-                selected_score = rollout.score if rollout is not None else val_loss
+                if rollout is not None:
+                    selected_score = rollout.score
+                elif bucket is not None:
+                    selected_score = bucket.macro
+                else:
+                    selected_score = val_loss
 
                 # scheduler tracks the same metric used for best-checkpoint selection so
                 # LR adaptation and best.pt agree on what improvement means.
@@ -226,16 +274,24 @@ class Trainer:
                     epoch_index,
                     val_loss=val_loss,
                     rollout=rollout,
+                    bucket=bucket,
                     selected_metric=selected_metric,
                     selected_score=selected_score,
                     is_best=is_best,
                 )
                 self._log_epoch(
-                    epoch_index, total_epochs, train_summary, val_loss, current_lr, rollout
+                    epoch_index,
+                    total_epochs,
+                    train_summary,
+                    val_loss,
+                    current_lr,
+                    rollout,
+                    bucket,
                 )
                 last_rollout = rollout
+                last_bucket = bucket
 
-            score_after = f"{last_rollout.score:+.4f}" if last_rollout is not None else "n/a"
+            score_after = _format_rollout_or_bucket(last_rollout, last_bucket)
             logger.info(
                 "stage %d/%d done  | horizon=%d | rscore_after=%s",
                 stage_idx + 1,
@@ -446,14 +502,19 @@ class Trainer:
         return ckpt_dir
 
     def _setup_logging(self) -> Path | None:
-        """Create log directory and CSV header if enabled."""
+        """Create log directory and CSV header if enabled.
+
+        Header width follows `self.bucket_bin_order`: empty in single-curve
+        mode (header is byte-identical to non-bucket runs), populated in
+        bucket-aware mode so per-bin columns are reserved up front.
+        """
         if not self.cfg.logging.enabled:
             return None
 
         log_dir = Path(self.cfg.logging.dir) / self.run_id
         log_dir.mkdir(parents=True, exist_ok=True)
         csv_path = log_dir / "metrics.csv"
-        init_metrics_csv(csv_path)
+        init_metrics_csv(csv_path, bin_names=self.bucket_bin_order)
         return csv_path
 
     def apply_noise(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -647,13 +708,28 @@ class Trainer:
         *,
         val_loss: float,
         rollout: RolloutScore | None,
+        bucket: BucketRolloutScore | None,
         selected_metric: str,
         selected_score: float,
         is_best: bool,
     ) -> None:
-        """Save model checkpoint if enabled."""
+        """Save model checkpoint if enabled.
+
+        `Checkpoint.rollout_score` carries the scalar rollout score in
+        effect: the single-curve score in `rollout_score` mode and the
+        macro score in `bucket_macro_rollout_score` mode. Per-bin scores
+        are intentionally not persisted in the checkpoint; they live in
+        the metrics CSV alongside the run.
+        """
         if self.ckpt_dir is None:
             return
+
+        if rollout is not None:
+            ckpt_rollout_score: float | None = rollout.score
+        elif bucket is not None:
+            ckpt_rollout_score = bucket.macro
+        else:
+            ckpt_rollout_score = None
 
         ckpt = Checkpoint(
             epoch=epoch,
@@ -668,7 +744,7 @@ class Trainer:
             git_commit=self._git_commit(),
             selected_metric=selected_metric,
             selected_score=selected_score,
-            rollout_score=rollout.score if rollout is not None else None,
+            rollout_score=ckpt_rollout_score,
         )
         save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
         if is_best:
@@ -682,6 +758,7 @@ class Trainer:
         val_loss: float,
         lr: float,
         rollout: RolloutScore | None,
+        bucket: BucketRolloutScore | None,
     ) -> None:
         """Write epoch metrics to CSV and console.
 
@@ -691,9 +768,19 @@ class Trainer:
         rendering artefact that would otherwise show up under curriculum.
 
         Gradient diagnostics for the epoch come from `train_summary` and are
-        only populated for training epochs that took at least one step.
+        only populated for training epochs that took at least one step. In
+        bucket mode the macro score lands in `rollout_score`, the single-
+        curve diagnostic columns stay blank, and per-bin RolloutScore objects
+        feed the dynamic bucket columns via `self.bucket_bin_order`.
         """
         train_loss = train_summary.loss
+
+        if rollout is not None:
+            scalar_score: float | None = rollout.score
+        elif bucket is not None:
+            scalar_score = bucket.macro
+        else:
+            scalar_score = None
 
         if self.csv_path is not None:
             metrics = EpochMetrics(
@@ -701,7 +788,7 @@ class Trainer:
                 train_loss=train_loss,
                 val_loss=val_loss,
                 lr=lr,
-                rollout_score=rollout.score if rollout is not None else None,
+                rollout_score=scalar_score,
                 dominance_horizon=rollout.dominance_horizon if rollout is not None else None,
                 fraction_beating_baseline=(
                     rollout.fraction_beating_baseline if rollout is not None else None
@@ -711,19 +798,11 @@ class Trainer:
                 grad_norm_max=train_summary.grad_norm_max,
                 grad_clip_fraction=train_summary.grad_clip_fraction,
                 skipped_batches=train_summary.skipped_batches,
+                bucket_per_bin=bucket.per_bin if bucket is not None else None,
             )
-            append_metrics(self.csv_path, metrics)
+            append_metrics(self.csv_path, metrics, bin_names=self.bucket_bin_order)
 
-        if rollout is None:
-            logger.info(
-                "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",
-                epoch,
-                total_epochs,
-                train_loss,
-                val_loss,
-                lr,
-            )
-        else:
+        if rollout is not None:
             logger.info(
                 "epoch %3d/%d | train %.6f | val %.6f | rscore %+.4f "
                 "| dom %d | beat %.2f | lr %.2e",
@@ -734,6 +813,26 @@ class Trainer:
                 rollout.score,
                 rollout.dominance_horizon,
                 rollout.fraction_beating_baseline,
+                lr,
+            )
+        elif bucket is not None:
+            logger.info(
+                "epoch %3d/%d | train %.6f | val %.6f | macro %+.4f | bins %d | lr %.2e",
+                epoch,
+                total_epochs,
+                train_loss,
+                val_loss,
+                bucket.macro,
+                len(bucket.per_bin),
+                lr,
+            )
+        else:
+            logger.info(
+                "epoch %3d/%d | train %.6f | val %.6f | lr %.2e",
+                epoch,
+                total_epochs,
+                train_loss,
+                val_loss,
                 lr,
             )
 

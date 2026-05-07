@@ -1535,3 +1535,170 @@ def test_artifact_dir_colocates_checkpoints_and_metrics(
     assert (run_dir / "best.pt").exists()
     assert (run_dir / "latest.pt").exists()
     assert (run_dir / "metrics.csv").exists()
+
+
+def _write_stratified_val_h5(path: Path, *, n_frames: int = 10, seed: int = 0) -> None:
+    """Write a 4-trajectory stratified val fixture with two bins (extreme + smooth)."""
+    from data._io import write_trajectories
+    from data._types import EncounterBin, Trajectories
+
+    rng = np.random.default_rng(seed)
+    n_traj = 4
+    states = rng.normal(size=(n_traj, n_frames, 3, 5)).astype(np.float32)
+    states[..., 4] = 1.0
+    energies = np.zeros((n_traj, n_frames), dtype=np.float32)
+
+    bins = (
+        EncounterBin(name="extreme", lo=0.0, hi=0.05),
+        EncounterBin(name="smooth", lo=0.05, hi=float("inf")),
+    )
+    bundle = Trajectories(
+        states=states,
+        energies=energies,
+        encounter_bin_id=np.array([0, 1, 0, 1], dtype=np.int64),
+        encounter_bin_name=np.array(["extreme", "smooth", "extreme", "smooth"]),
+        min_pairwise_distance=np.array([0.02, 0.5, 0.03, 1.0], dtype=np.float64),
+        encounter_bins=bins,
+    )
+    write_trajectories(path, bundle)
+
+
+def test_bucket_mode_rejects_non_stratified_val(make_cfg: TrainConfig) -> None:
+    """Constructing a Trainer with bucket_macro_rollout_score on a non-stratified val raises."""
+    cfg = replace(
+        make_cfg,
+        training=replace(
+            make_cfg.training,
+            checkpoint_metric="bucket_macro_rollout_score",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires a stratified val file"):
+        Trainer(cfg, model=DummyModel())
+
+
+def test_bucket_mode_rejects_unknown_checkpoint_metric(make_cfg: TrainConfig) -> None:
+    """Unknown checkpoint_metric value raises with the full set listed."""
+    cfg = replace(
+        make_cfg,
+        training=replace(make_cfg.training, checkpoint_metric="not_a_real_metric"),
+    )
+
+    with pytest.raises(ValueError, match="bucket_macro_rollout_score"):
+        Trainer(cfg, model=DummyModel())
+
+
+def test_bucket_mode_end_to_end(make_cfg: TrainConfig, tmp_path: Path) -> None:
+    """Bucket-aware training writes per-bin CSV columns and stores macro in checkpoints."""
+    val_path = tmp_path / "stratified_val.h5"
+    _write_stratified_val_h5(val_path)
+
+    cfg = replace(
+        make_cfg,
+        data=replace(make_cfg.data, val_path=str(val_path)),
+        training=replace(
+            make_cfg.training,
+            checkpoint_metric="bucket_macro_rollout_score",
+        ),
+    )
+
+    train(cfg, model=DummyModel())
+
+    run_dir = _find_run_dir(make_cfg.logging.dir)
+    csv_path = run_dir / "metrics.csv"
+    assert csv_path.exists()
+
+    lines = csv_path.read_text().strip().split("\n")
+    header = lines[0]
+    base_header = (
+        "epoch,train_loss,val_loss,lr,"
+        "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
+        "grad_norm_mean,grad_norm_max,grad_clip_fraction,skipped_batches"
+    )
+    assert header.startswith(base_header + ",")
+    bucket_suffix = header[len(base_header) + 1 :]
+    assert bucket_suffix == (
+        "rollout_score_extreme,dominance_horizon_extreme,"
+        "fraction_beating_baseline_extreme,final_ratio_extreme,"
+        "rollout_score_smooth,dominance_horizon_smooth,"
+        "fraction_beating_baseline_smooth,final_ratio_smooth"
+    )
+    assert len(lines) == cfg.training.epochs + 1
+
+    # one row per epoch with macro in rollout_score and per-bin columns populated
+    first_row = lines[1].split(",")
+    column_names = header.split(",")
+    row = dict(zip(column_names, first_row, strict=True))
+    assert row["rollout_score"] != ""
+    # single-curve diagnostic columns are blank in bucket mode
+    assert row["dominance_horizon"] == ""
+    assert row["fraction_beating_baseline"] == ""
+    assert row["final_ratio"] == ""
+    # both bins populated (4-trajectory val with 2 trajectories per bin)
+    for bin_name in ("extreme", "smooth"):
+        for col in (
+            f"rollout_score_{bin_name}",
+            f"dominance_horizon_{bin_name}",
+            f"fraction_beating_baseline_{bin_name}",
+            f"final_ratio_{bin_name}",
+        ):
+            assert row[col] != "", f"expected {col} populated, got blank"
+
+
+def test_bucket_mode_checkpoint_stores_macro(make_cfg: TrainConfig, tmp_path: Path) -> None:
+    """In bucket mode, Checkpoint.selected_score and rollout_score both equal the macro."""
+    val_path = tmp_path / "stratified_val.h5"
+    _write_stratified_val_h5(val_path)
+
+    cfg = replace(
+        make_cfg,
+        data=replace(make_cfg.data, val_path=str(val_path)),
+        training=replace(
+            make_cfg.training,
+            checkpoint_metric="bucket_macro_rollout_score",
+        ),
+    )
+
+    train(cfg, model=DummyModel())
+
+    run_dir = _find_run_dir(make_cfg.checkpointing.dir)
+    ckpt_path = run_dir / "best.pt"
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+    assert ckpt.selected_metric == "bucket_macro_rollout_score"
+    # selected_score and rollout_score both carry the macro in bucket mode
+    assert ckpt.selected_score == ckpt.rollout_score
+    assert math.isfinite(ckpt.rollout_score)
+
+
+def test_bucket_mode_csv_macro_matches_arithmetic_mean_of_per_bin(
+    make_cfg: TrainConfig,
+    tmp_path: Path,
+) -> None:
+    """Pin: rollout_score column == mean of populated per-bin rollout_score_<bin> columns."""
+    val_path = tmp_path / "stratified_val.h5"
+    _write_stratified_val_h5(val_path)
+
+    cfg = replace(
+        make_cfg,
+        data=replace(make_cfg.data, val_path=str(val_path)),
+        training=replace(
+            make_cfg.training,
+            checkpoint_metric="bucket_macro_rollout_score",
+        ),
+    )
+
+    train(cfg, model=DummyModel())
+
+    run_dir = _find_run_dir(make_cfg.logging.dir)
+    csv_path = run_dir / "metrics.csv"
+    lines = csv_path.read_text().strip().split("\n")
+    header_cols = lines[0].split(",")
+    row = dict(zip(header_cols, lines[1].split(","), strict=True))
+
+    macro = float(row["rollout_score"])
+    per_bin_scores = [
+        float(row[f"rollout_score_{b}"]) for b in ("extreme", "smooth") if row[f"rollout_score_{b}"]
+    ]
+    expected = sum(per_bin_scores) / len(per_bin_scores)
+    assert macro == pytest.approx(expected, rel=1e-5)

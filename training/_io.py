@@ -62,12 +62,25 @@ def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
     raise TypeError(msg)
 
 
-def init_metrics_csv(path: Path) -> None:
-    """Create a metrics CSV with the EpochMetrics header row."""
-    path.write_text(EpochMetrics.csv_header() + "\n")
+def init_metrics_csv(path: Path, bin_names: tuple[str, ...] = ()) -> None:
+    """Create a metrics CSV with the EpochMetrics header row.
+
+    Pass `bin_names` to widen the header with per-bin bucket columns when
+    the trainer is in bucket-aware mode; the default preserves the
+    existing single-curve header byte-identically.
+    """
+    path.write_text(EpochMetrics.csv_header(bin_names) + "\n")
 
 
-def append_metrics(path: Path, row: EpochMetrics) -> None:
-    """Append one EpochMetrics row to an existing metrics CSV."""
+def append_metrics(
+    path: Path,
+    row: EpochMetrics,
+    bin_names: tuple[str, ...] = (),
+) -> None:
+    """Append one EpochMetrics row to an existing metrics CSV.
+
+    `bin_names` must match the value used by `init_metrics_csv` for this
+    file so per-bin columns line up with the header.
+    """
     with path.open("a") as f:
-        f.write(row.to_csv_row() + "\n")
+        f.write(row.to_csv_row(bin_names) + "\n")

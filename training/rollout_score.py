@@ -29,15 +29,17 @@ import numpy.typing as npt
 import torch
 from torch import nn
 
-from data._io import read_states
-from evaluation.metrics import compute_rollout_mse, run_all_rollouts
+from data._io import read_states, read_trajectories
+from evaluation._binning import trajectory_masks
+from evaluation.metrics import compute_rollout_mse, run_all_rollouts, subset_rollout_mse
+from evaluation.rollout_score import BaselineEnvelopeComputer
 from models.baselines import (
     ConstantVelocityBaseline,
     MeanStateBaseline,
     MeanVelocityBaseline,
     PersistenceBaseline,
 )
-from training._types import RolloutScore
+from training._types import BucketRolloutScore, RolloutScore
 
 DEFAULT_ANCHOR_STEPS: tuple[int, ...] = (10, 20, 50, 100, 199)
 DEFAULT_EPS: float = 1e-12
@@ -196,3 +198,109 @@ def _curve_for_model(
     predicted = run_all_rollouts(model, val_traj, device)
     rollout_mse = compute_rollout_mse(val_traj, predicted)
     return rollout_mse.state.median[1:]
+
+
+class BucketRolloutScoreEvaluator:
+    """Bucket-aware rollout score against a stratified validation set.
+
+    Sibling of `RolloutScoreEvaluator` for `checkpoint_metric =
+    "bucket_macro_rollout_score"`. The val file must carry the
+    stratification metadata produced by `data/generate.py`; otherwise
+    construction raises immediately so misconfigured runs fail before
+    epoch 1, not after.
+
+    Each call to `score(model)` runs the model on the full val set
+    once, computes a bin-restricted rollout curve via subset_rollout_mse,
+    looks up the per-bin baseline envelope, and folds the per-bin
+    `RolloutScore` objects into a `BucketRolloutScore` whose `macro` is
+    the unweighted arithmetic mean of the populated per-bin scores.
+    Empty bins are skipped from the macro (and the per-bin dict);
+    production stratified val files have all bins populated.
+
+    The four deterministic baselines roll out exactly once across the
+    entire training run via the cached `BaselineEnvelopeComputer`. Per-
+    bin envelopes are derived by slicing the cached RolloutMSE objects.
+    """
+
+    def __init__(
+        self,
+        val_path: str | Path,
+        train_path: str | Path,
+        dt: float,
+        device: torch.device,
+    ) -> None:
+        """Eagerly read the val bundle and validate stratification."""
+        self.val_path = Path(val_path)
+        self.train_path = Path(train_path)
+        self.dt = float(dt)
+        self.device = device
+
+        bundle = read_trajectories(self.val_path)
+        if bundle.encounter_bin_id is None:
+            msg = (
+                f"checkpoint_metric=bucket_macro_rollout_score requires a stratified "
+                f"val file (with encounter_bin_id, encounter_bins, etc.); "
+                f"{self.val_path} has no stratification metadata"
+            )
+            raise ValueError(msg)
+        self._val_bundle = bundle
+        # narrow nullable bundle fields once so score() doesn't repeat the assert
+        assert bundle.encounter_bins is not None
+        self._bin_order: tuple[str, ...] = tuple(b.name for b in bundle.encounter_bins)
+        self._envelope_computer: BaselineEnvelopeComputer | None = None
+
+    @property
+    def val_traj(self) -> np.ndarray:
+        """Validation trajectories (cached on construction)."""
+        return self._val_bundle.states
+
+    @property
+    def bin_order(self) -> tuple[str, ...]:
+        """Canonical bin order from the val file's encounter_bins."""
+        return self._bin_order
+
+    @property
+    def envelope_computer(self) -> BaselineEnvelopeComputer:
+        """Lazy: roll out the four baselines on val once, cache for the run."""
+        if self._envelope_computer is None:
+            ec = BaselineEnvelopeComputer(self.train_path, self.dt, self.device)
+            ec.fit(self.val_traj)
+            self._envelope_computer = ec
+        return self._envelope_computer
+
+    def score(self, model: nn.Module) -> BucketRolloutScore:
+        """Run the model on val once and return its bucket-aware rollout score.
+
+        Toggles the model into eval mode for the rollout and restores its
+        prior training state on exit, even if the rollout raises.
+        """
+        was_training = model.training
+        model.eval()
+        try:
+            predicted = run_all_rollouts(model, self.val_traj, self.device)
+            full_mse = compute_rollout_mse(self.val_traj, predicted)
+        finally:
+            model.train(was_training)
+
+        bin_id = self._val_bundle.encounter_bin_id
+        bins = self._val_bundle.encounter_bins
+        assert bin_id is not None
+        assert bins is not None
+
+        masks = trajectory_masks(bin_id, len(bins))
+        per_bin: dict[str, RolloutScore] = {}
+        for bin_def, mask in zip(bins, masks, strict=True):
+            if not mask.any():
+                continue  # empty bin: skip, do not contribute to macro
+            model_curve = subset_rollout_mse(full_mse, mask).state.median[1:]
+            envelope = self.envelope_computer.envelope_for_mask(mask)
+            per_bin[bin_def.name] = compute_rollout_score(
+                model_curve, envelope, anchor_steps=DEFAULT_ANCHOR_STEPS
+            )
+
+        if not per_bin:
+            msg = "no non-empty bins in val file; cannot compute bucket macro score"
+            raise RuntimeError(msg)
+
+        macro = float(np.mean([s.score for s in per_bin.values()]))
+        return BucketRolloutScore(macro=macro, per_bin=per_bin, bin_order=self._bin_order)

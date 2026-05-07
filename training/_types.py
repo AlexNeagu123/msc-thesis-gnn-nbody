@@ -236,6 +236,27 @@ class RolloutScore:
     ratios_at_step: dict[int, float]
 
 
+@dataclass(frozen=True)
+class BucketRolloutScore:
+    """Bucket-aware rollout score for checkpoint selection on stratified val.
+
+    `macro` is the unweighted arithmetic mean of the per-bin scalar scores
+    over non-empty bins; weighting is intentionally not used so common
+    encounter regimes cannot hide failures in close-encounter bins. Empty
+    bins are skipped from `per_bin` (and thus from the macro) so the
+    evaluator stays robust on small or unbalanced val sets.
+
+    `bin_order` carries the canonical bin order from the val file's
+    `encounter_bins`; consumers (CSV writers, plotting) iterate this to
+    keep per-bin columns in a stable order even though `per_bin` is
+    keyed by name.
+    """
+
+    macro: float
+    per_bin: dict[str, RolloutScore]
+    bin_order: tuple[str, ...]
+
+
 @dataclass
 class EpochMetrics:
     """One row of the training metrics CSV.
@@ -246,6 +267,14 @@ class EpochMetrics:
     where every batch was skipped leaves the three grad-norm fields blank
     while still recording the skip count. Empty strings render in the CSV
     when None.
+
+    In bucket-aware mode, `rollout_score` carries the macro score and
+    `bucket_per_bin` carries per-bin RolloutScore objects keyed by bin
+    name; the per-bin diagnostics render in dynamic CSV columns whose
+    names are appended to the header at logging-init time. The single-
+    curve diagnostic columns (dominance_horizon, fraction_beating_baseline,
+    final_ratio) stay blank in bucket mode because they have no obvious
+    aggregate definition across bins.
     """
 
     epoch: int
@@ -260,18 +289,39 @@ class EpochMetrics:
     grad_norm_max: float | None = None
     grad_clip_fraction: float | None = None
     skipped_batches: int | None = None
+    bucket_per_bin: dict[str, RolloutScore] | None = None
 
     @classmethod
-    def csv_header(cls) -> str:
-        """Return the CSV header line (no trailing newline)."""
-        return (
+    def csv_header(cls, bin_names: tuple[str, ...] = ()) -> str:
+        """Return the CSV header line (no trailing newline).
+
+        When `bin_names` is non-empty, four per-bin columns are appended
+        per bin in the given order: rollout_score_<name>,
+        dominance_horizon_<name>, fraction_beating_baseline_<name>,
+        final_ratio_<name>. The default empty tuple preserves the
+        existing single-curve header byte-identically.
+        """
+        base = (
             "epoch,train_loss,val_loss,lr,"
             "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
             "grad_norm_mean,grad_norm_max,grad_clip_fraction,skipped_batches"
         )
+        if not bin_names:
+            return base
+        bucket_cols = ",".join(
+            f"rollout_score_{name},dominance_horizon_{name},"
+            f"fraction_beating_baseline_{name},final_ratio_{name}"
+            for name in bin_names
+        )
+        return f"{base},{bucket_cols}"
 
-    def to_csv_row(self) -> str:
-        """Return one CSV row matching csv_header column order."""
+    def to_csv_row(self, bin_names: tuple[str, ...] = ()) -> str:
+        """Return one CSV row matching csv_header column order.
+
+        Per-bin columns appear in the order given by `bin_names`; bins
+        absent from `bucket_per_bin` (e.g. empty bins skipped by the
+        macro) render as four blank columns.
+        """
         rs = "" if self.rollout_score is None else f"{self.rollout_score:.6f}"
         dh = "" if self.dominance_horizon is None else str(self.dominance_horizon)
         fb = (
@@ -284,7 +334,22 @@ class EpochMetrics:
         gnx = "" if self.grad_norm_max is None else f"{self.grad_norm_max:.6f}"
         gcf = "" if self.grad_clip_fraction is None else f"{self.grad_clip_fraction:.6f}"
         skip = "" if self.skipped_batches is None else str(self.skipped_batches)
-        return (
+        base = (
             f"{self.epoch},{self.train_loss:.6f},{self.val_loss:.6f},{self.lr:.2e},"
             f"{rs},{dh},{fb},{fr},{gnm},{gnx},{gcf},{skip}"
         )
+        if not bin_names:
+            return base
+
+        per_bin = self.bucket_per_bin or {}
+        bucket_parts: list[str] = []
+        for name in bin_names:
+            score = per_bin.get(name)
+            if score is None:
+                bucket_parts.extend(["", "", "", ""])
+            else:
+                bucket_parts.append(f"{score.score:.6f}")
+                bucket_parts.append(str(score.dominance_horizon))
+                bucket_parts.append(f"{score.fraction_beating_baseline:.6f}")
+                bucket_parts.append(f"{score.final_ratio:.6f}")
+        return f"{base},{','.join(bucket_parts)}"

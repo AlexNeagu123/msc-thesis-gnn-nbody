@@ -8,9 +8,13 @@ import numpy as np
 import pytest
 import torch
 
+from data._io import write_trajectories
+from data._types import EncounterBin, Trajectories
 from models.baselines import ConstantVelocityBaseline, PersistenceBaseline
+from training._types import BucketRolloutScore
 from training.rollout_score import (
     DEFAULT_ANCHOR_STEPS,
+    BucketRolloutScoreEvaluator,
     RolloutScoreEvaluator,
     _curve_for_model,
     compute_rollout_score,
@@ -294,3 +298,179 @@ def test_curve_contract_is_one_indexed_steps_one_through_n() -> None:
         199: pytest.approx(199.0, rel=1e-12),
     }
     assert score.final_ratio == pytest.approx(199.0, rel=1e-12)
+
+
+def _write_stratified_h5(
+    path: Path,
+    *,
+    bin_id: list[int],
+    n_frames: int = 6,
+    seed: int = 0,
+) -> None:
+    """Write a small stratified trajectory file with two canonical bins.
+
+    `bin_id` controls how many trajectories are assigned to each bin and
+    in what order; the per-trajectory min pairwise distance is set
+    deterministically inside each bin's interval.
+    """
+    bins = (
+        EncounterBin(name="extreme", lo=0.0, hi=0.05),
+        EncounterBin(name="smooth", lo=0.05, hi=float("inf")),
+    )
+    representative_d_min = {0: 0.02, 1: 0.5}
+    rng = np.random.default_rng(seed)
+    n_traj = len(bin_id)
+
+    states = rng.normal(size=(n_traj, n_frames, 3, 5)).astype(np.float32)
+    states[..., 4] = 1.0
+    energies = np.zeros((n_traj, n_frames), dtype=np.float32)
+
+    bundle = Trajectories(
+        states=states,
+        energies=energies,
+        encounter_bin_id=np.array(bin_id, dtype=np.int64),
+        encounter_bin_name=np.array([bins[b].name for b in bin_id]),
+        min_pairwise_distance=np.array([representative_d_min[b] for b in bin_id], dtype=np.float64),
+        encounter_bins=bins,
+    )
+    write_trajectories(path, bundle)
+
+
+def test_bucket_evaluator_construction_rejects_non_stratified_val(tmp_path: Path) -> None:
+    """Non-stratified val raises with a clear configuration message."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_traj_h5(val_path)
+    _write_traj_h5(train_path)
+
+    with pytest.raises(ValueError, match="requires a stratified val file"):
+        BucketRolloutScoreEvaluator(
+            val_path=val_path,
+            train_path=train_path,
+            dt=0.05,
+            device=torch.device("cpu"),
+        )
+
+
+def test_bucket_evaluator_construction_succeeds_on_stratified_val(tmp_path: Path) -> None:
+    """Stratified val constructs and exposes canonical bin order."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_stratified_h5(val_path, bin_id=[0, 1, 0, 1])
+    _write_traj_h5(train_path)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+
+    assert ev.bin_order == ("extreme", "smooth")
+    assert ev.val_traj.shape[0] == 4
+
+
+def test_bucket_evaluator_score_returns_macro_and_per_bin(tmp_path: Path) -> None:
+    """score() returns one RolloutScore per non-empty bin and a finite macro."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_stratified_h5(val_path, bin_id=[0, 1, 0, 1], n_frames=8)
+    _write_traj_h5(train_path, n_frames=8)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+    bucket = ev.score(PersistenceBaseline().eval())
+
+    assert isinstance(bucket, BucketRolloutScore)
+    assert bucket.bin_order == ("extreme", "smooth")
+    assert set(bucket.per_bin) == {"extreme", "smooth"}
+    assert math.isfinite(bucket.macro)
+
+
+def test_bucket_evaluator_macro_is_arithmetic_mean(tmp_path: Path) -> None:
+    """Macro must equal the unweighted arithmetic mean of populated per-bin scores.
+
+    Pinned explicitly so any future weighted-averaging would have to
+    deliberately update this assertion. Using imbalanced bin counts
+    (3 vs 1) so a sample-weighted mean would diverge from the macro.
+    """
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_stratified_h5(val_path, bin_id=[0, 0, 0, 1], n_frames=8)
+    _write_traj_h5(train_path, n_frames=8)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+    bucket = ev.score(PersistenceBaseline().eval())
+
+    expected = (bucket.per_bin["extreme"].score + bucket.per_bin["smooth"].score) / 2
+    assert bucket.macro == pytest.approx(expected, rel=1e-12)
+
+
+def test_bucket_evaluator_skips_empty_bins(tmp_path: Path) -> None:
+    """Bins with zero trajectories are absent from per_bin and the macro."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    # all trajectories in the smooth bin: extreme is empty
+    _write_stratified_h5(val_path, bin_id=[1, 1, 1, 1], n_frames=8)
+    _write_traj_h5(train_path, n_frames=8)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+    bucket = ev.score(PersistenceBaseline().eval())
+
+    assert set(bucket.per_bin) == {"smooth"}
+    assert bucket.macro == pytest.approx(bucket.per_bin["smooth"].score)
+    # bin_order still carries the canonical order, including empty extreme
+    assert bucket.bin_order == ("extreme", "smooth")
+
+
+def test_bucket_evaluator_caches_envelope(tmp_path: Path) -> None:
+    """Envelope is built once and reused across multiple score() calls."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_stratified_h5(val_path, bin_id=[0, 1, 0, 1])
+    _write_traj_h5(train_path)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+    ev.score(PersistenceBaseline().eval())
+    cached = ev.envelope_computer
+    ev.score(ConstantVelocityBaseline(dt=0.05).eval())
+    assert ev.envelope_computer is cached
+
+
+def test_bucket_evaluator_preserves_caller_model_training_state(tmp_path: Path) -> None:
+    """score() must restore model.training even though it toggles to eval internally."""
+    val_path = tmp_path / "val.h5"
+    train_path = tmp_path / "train.h5"
+    _write_stratified_h5(val_path, bin_id=[0, 1, 0, 1])
+    _write_traj_h5(train_path)
+
+    ev = BucketRolloutScoreEvaluator(
+        val_path=val_path,
+        train_path=train_path,
+        dt=0.05,
+        device=torch.device("cpu"),
+    )
+    model = ConstantVelocityBaseline(dt=0.05)
+    model.train(True)
+
+    ev.score(model)
+    assert model.training is True
