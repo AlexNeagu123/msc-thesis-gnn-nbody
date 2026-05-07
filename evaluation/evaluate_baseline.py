@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from data._io import read_states
+from data._io import read_trajectories
 from evaluation._io import write_evaluation_report, write_summary_csv
 from evaluation._types import EvaluationMetadata, EvaluationReport
 from evaluation.evaluate import build_evaluation_report
@@ -62,7 +62,8 @@ def evaluate_baseline(
     model = _build_baseline(baseline, dt=dt, train_path=train_path).to(torch_device)
     model.eval()
 
-    test_traj = read_states(test_path)
+    test_bundle = read_trajectories(test_path)
+    test_traj = test_bundle.states
     n_traj, n_frames, n_particles, _state_dim = test_traj.shape
 
     single_step_metrics = compute_single_step_metrics(model, str(test_path), torch_device)
@@ -95,6 +96,7 @@ def evaluate_baseline(
         rollout_mse=rollout_mse,
         metadata=metadata,
         device=torch_device,
+        test_bundle=test_bundle,
     )
 
     target_dir = _resolve_output_dir(output_dir, baseline)

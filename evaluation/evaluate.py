@@ -4,16 +4,22 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from torch import nn
 
-from data._io import read_states
+from data._io import read_trajectories
+from data._types import Trajectories
 from data.dataset import NBodyDataset
+from evaluation._binning import expand_trajectory_mask_to_transitions, trajectory_masks
 from evaluation._io import write_evaluation_report, write_summary_csv
 from evaluation._types import (
     DistanceSummary,
     DivergenceMetrics,
     DriftSummary,
+    EncounterBinDefinition,
+    EncounterBinReport,
+    EncounterBinsReport,
     EnergyDriftReport,
     EnergyReport,
     EvaluationMetadata,
@@ -34,6 +40,7 @@ from evaluation.metrics import (
     compute_rollout_mse,
     compute_single_step_metrics,
     run_all_rollouts,
+    subset_rollout_mse,
 )
 from models.hgnn import HGNN
 from training._io import load_checkpoint, load_config
@@ -66,7 +73,8 @@ def evaluate_checkpoint(
     pos_std, vel_std = _normalization_stats(cfg, checkpoint)
     model = _load_model(cfg, checkpoint, pos_std, vel_std, torch_device)
 
-    test_traj = read_states(test_path)
+    test_bundle = read_trajectories(test_path)
+    test_traj = test_bundle.states
 
     single_step_metrics = compute_single_step_metrics(model, str(test_path), torch_device)
     predicted = run_all_rollouts(model, test_traj, torch_device)
@@ -98,6 +106,7 @@ def evaluate_checkpoint(
         rollout_mse=rollout_mse,
         metadata=metadata,
         device=torch_device,
+        test_bundle=test_bundle,
     )
 
     target_dir = _output_dir(output_dir, cfg.model.name, checkpoint_path)
@@ -118,9 +127,15 @@ def build_evaluation_report(
     rollout_mse: RolloutMSE,
     metadata: EvaluationMetadata,
     device: torch.device,
+    test_bundle: Trajectories | None = None,
     steps: list[int] | None = None,
 ) -> EvaluationReport:
-    """Build the typed evaluation report from precomputed metrics and caller metadata."""
+    """Build the typed evaluation report from precomputed metrics and caller metadata.
+
+    When `test_bundle` carries stratification fields, the report also gets
+    a populated `encounter_bins` block built from per-bin slices of the
+    same metric arrays. Otherwise the field stays None (legacy / uniform).
+    """
     if steps is None:
         steps = _summary_steps(test_traj.shape[1] - 1)
 
@@ -131,7 +146,34 @@ def build_evaluation_report(
         min_pairwise_distance=_summarize_distance(single_step_metrics.min_pairwise_distance),
     )
 
-    rollout = RolloutReport(
+    rollout = _build_rollout_report(rollout_mse, steps)
+    energy = _build_energy_report(model, predicted, device)
+
+    encounter_bins = None
+    if test_bundle is not None and test_bundle.encounter_bin_id is not None:
+        encounter_bins = _build_encounter_bins_report(
+            bundle=test_bundle,
+            model=model,
+            predicted=predicted,
+            single_step_metrics=single_step_metrics,
+            rollout_mse=rollout_mse,
+            steps=steps,
+            device=device,
+            n_transitions=metadata.n_transitions,
+        )
+
+    return EvaluationReport(
+        metadata=metadata,
+        single_step=single_step,
+        rollout=rollout,
+        energy=energy,
+        encounter_bins=encounter_bins,
+    )
+
+
+def _build_rollout_report(rollout_mse: RolloutMSE, steps: list[int]) -> RolloutReport:
+    """Assemble a RolloutReport from a (possibly subsetted) RolloutMSE."""
+    return RolloutReport(
         steps=_rollout_steps(rollout_mse, steps),
         curves=_rollout_curves(rollout_mse),
         first_nonfinite_step=_first_nonfinite_steps(rollout_mse.state.per_trajectory),
@@ -146,7 +188,14 @@ def build_evaluation_report(
         state_final_finite_fraction=_float(rollout_mse.state.finite_fraction[-1]),
     )
 
-    energy = EnergyReport(
+
+def _build_energy_report(
+    model: nn.Module,
+    predicted: np.ndarray,
+    device: torch.device,
+) -> EnergyReport:
+    """Assemble an EnergyReport with optional learned-Hamiltonian drift."""
+    return EnergyReport(
         physical=_energy_drift_report(predicted),
         learned_hamiltonian=(
             _learned_hamiltonian_drift(model, predicted, device)
@@ -155,8 +204,91 @@ def build_evaluation_report(
         ),
     )
 
-    return EvaluationReport(
-        metadata=metadata,
+
+def _build_encounter_bins_report(
+    *,
+    bundle: Trajectories,
+    model: nn.Module,
+    predicted: np.ndarray,
+    single_step_metrics: SingleStepMetrics,
+    rollout_mse: RolloutMSE,
+    steps: list[int],
+    device: torch.device,
+    n_transitions: int,
+) -> EncounterBinsReport:
+    """Build the per-bin encounter report from already-computed metric arrays.
+
+    The bundle's stratification fields are required to be populated; the
+    caller (build_evaluation_report) gates entry on `encounter_bin_id is
+    not None`, and `data/_io.py:_validate_stratification` guarantees the
+    other three fields are populated together.
+    """
+    bin_id = bundle.encounter_bin_id
+    d_mins = bundle.min_pairwise_distance
+    bins = bundle.encounter_bins
+    assert bin_id is not None
+    assert d_mins is not None
+    assert bins is not None
+
+    masks = trajectory_masks(bin_id, len(bins))
+
+    bin_definitions = [
+        EncounterBinDefinition(id=i, name=b.name, lo=b.lo, hi=b.hi) for i, b in enumerate(bins)
+    ]
+
+    by_name: dict[str, EncounterBinReport] = {}
+    for b, mask in zip(bins, masks, strict=True):
+        by_name[b.name] = _build_per_bin_report(
+            mask=mask,
+            d_mins=d_mins,
+            model=model,
+            predicted=predicted,
+            single_step_metrics=single_step_metrics,
+            rollout_mse=rollout_mse,
+            steps=steps,
+            device=device,
+            n_transitions=n_transitions,
+        )
+
+    return EncounterBinsReport(bins=bin_definitions, by_name=by_name)
+
+
+def _build_per_bin_report(
+    *,
+    mask: npt.NDArray[np.bool_],
+    d_mins: npt.NDArray[np.floating],
+    model: nn.Module,
+    predicted: np.ndarray,
+    single_step_metrics: SingleStepMetrics,
+    rollout_mse: RolloutMSE,
+    steps: list[int],
+    device: torch.device,
+    n_transitions: int,
+) -> EncounterBinReport:
+    """Build one per-bin report by slicing already-computed metric arrays."""
+    count = int(mask.sum())
+    expanded_mask = expand_trajectory_mask_to_transitions(mask, n_transitions)
+
+    d_min_summary = _summarize_distance(d_mins[mask])
+
+    single_step = SingleStepReport(
+        state_mse=_summarize_mse(single_step_metrics.state_mse[expanded_mask]),
+        position_mse=_summarize_mse(single_step_metrics.position_mse[expanded_mask]),
+        velocity_mse=_summarize_mse(single_step_metrics.velocity_mse[expanded_mask]),
+        min_pairwise_distance=_summarize_distance(
+            single_step_metrics.min_pairwise_distance[expanded_mask]
+        ),
+    )
+
+    bin_rollout_mse = subset_rollout_mse(rollout_mse, mask)
+    rollout = _build_rollout_report(bin_rollout_mse, steps)
+
+    bin_predicted = predicted[mask]
+    energy = _build_energy_report(model, bin_predicted, device)
+
+    return EncounterBinReport(
+        count=count,
+        d_min=d_min_summary,
         single_step=single_step,
         rollout=rollout,
         energy=energy,
@@ -292,6 +424,8 @@ def _first_threshold_steps(per_trajectory: np.ndarray, threshold: float) -> list
 def _fraction_below_at_final(per_trajectory: np.ndarray, threshold: float) -> float | None:
     """Return fraction of trajectories finite and below threshold at final step."""
     final = per_trajectory[:, -1]
+    if final.size == 0:
+        return None
     return _float(np.mean(np.isfinite(final) & (final < threshold)))
 
 

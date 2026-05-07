@@ -406,6 +406,118 @@ class EnergyReport:
         return out
 
 
+@dataclass
+class EncounterBinDefinition:
+    """One bin definition inside an evaluation report's encounter_bins block.
+
+    Independent of data/_types.py:EncounterBin so the report layer can
+    annotate each bin with its canonical id and serialize the +inf top-of-
+    range as the JSON-safe sentinel "inf" (mirrors data/_io.py).
+    """
+
+    id: int
+    name: str
+    lo: float
+    hi: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize, encoding hi=+inf as the string sentinel "inf".
+
+        Strict +inf check (`==`, not isinf) so -inf is never aliased to the
+        positive sentinel: this serializer is independent of upstream bin
+        validation, so it must not silently round -inf to +inf.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "lo": self.lo,
+            "hi": "inf" if self.hi == float("inf") else self.hi,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "EncounterBinDefinition":
+        """Decode, restoring +inf from the "inf" sentinel."""
+        hi = d["hi"]
+        return cls(
+            id=int(d["id"]),
+            name=d["name"],
+            lo=float(d["lo"]),
+            hi=float("inf") if hi == "inf" else float(hi),
+        )
+
+
+@dataclass
+class EncounterBinReport:
+    """Per-bin metrics block: one entry under encounter_bins.by_name.
+
+    Mirrors the top-level evaluation report structure (single-step,
+    rollout, energy) restricted to trajectories whose true minimum
+    pairwise distance falls in this bin's interval. `baseline_ratios`
+    is filled in Block 3 (per-bin baseline-normalized ratios at the
+    standard anchor steps); Block 1 leaves it None.
+    """
+
+    count: int
+    d_min: DistanceSummary
+    single_step: SingleStepReport
+    rollout: RolloutReport
+    energy: EnergyReport
+    baseline_ratios: dict[str, float | None] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize, omitting baseline_ratios when absent."""
+        out: dict[str, Any] = {
+            "count": self.count,
+            "d_min": self.d_min.to_dict(),
+            "single_step": self.single_step.to_dict(),
+            "rollout": self.rollout.to_dict(),
+            "energy": self.energy.to_dict(),
+        }
+        if self.baseline_ratios is not None:
+            out["baseline_ratios"] = self.baseline_ratios
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "EncounterBinReport":
+        """Build from a JSON-shaped dict, reusing the shared sub-parsers."""
+        return cls(
+            count=int(d["count"]),
+            d_min=DistanceSummary(**d["d_min"]),
+            single_step=_single_step_from_dict(d["single_step"]),
+            rollout=_rollout_report_from_dict(d["rollout"]),
+            energy=_energy_report_from_dict(d["energy"]),
+            baseline_ratios=d.get("baseline_ratios"),
+        )
+
+
+@dataclass
+class EncounterBinsReport:
+    """Top-level encounter-stratification block.
+
+    `bins` carries the canonical ordered list of bin definitions; `by_name`
+    is the consumer-friendly lookup keyed by bin name. Insertion order in
+    `by_name` matches `bins` order.
+    """
+
+    bins: list[EncounterBinDefinition]
+    by_name: dict[str, EncounterBinReport]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize bins (canonical order) + by_name (lookup)."""
+        return {
+            "bins": [b.to_dict() for b in self.bins],
+            "by_name": {k: v.to_dict() for k, v in self.by_name.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "EncounterBinsReport":
+        """Build from a JSON-shaped dict."""
+        return cls(
+            bins=[EncounterBinDefinition.from_dict(b) for b in d["bins"]],
+            by_name={k: EncounterBinReport.from_dict(v) for k, v in d["by_name"].items()},
+        )
+
+
 def _energy_drift_from_dict(d: dict[str, Any]) -> EnergyDriftReport:
     """Construct an EnergyDriftReport from its JSON-shaped dict."""
     return EnergyDriftReport(
@@ -492,56 +604,76 @@ def _divergence_from_dict(d: dict[str, Any]) -> dict[str, DivergenceMetrics]:
     return {k: DivergenceMetrics(**v) for k, v in d.items()}
 
 
+def _rollout_report_from_dict(d: dict[str, Any]) -> RolloutReport:
+    """Construct RolloutReport, accepting legacy threshold and finite-fraction names."""
+    curves = d.get("curves")
+    state_thresholds = d.get("state_mse_thresholds", d.get("thresholds", {}))
+    position_thresholds = d.get("position_mse_thresholds", state_thresholds)
+    state_final_finite_fraction = d.get(
+        "state_final_finite_fraction",
+        d.get("finite_final_fraction"),
+    )
+    return RolloutReport(
+        steps={k: _rollout_step_from_dict(v) for k, v in d["steps"].items()},
+        first_nonfinite_step=d["first_nonfinite_step"],
+        state_mse_thresholds=_divergence_from_dict(state_thresholds),
+        position_mse_thresholds=_divergence_from_dict(position_thresholds),
+        state_final_finite_fraction=state_final_finite_fraction,
+        curves=_rollout_curves_from_dict(curves) if curves is not None else None,
+    )
+
+
+def _energy_report_from_dict(d: dict[str, Any]) -> EnergyReport:
+    """Construct EnergyReport with optional learned-Hamiltonian section."""
+    learned = d.get("learned_hamiltonian")
+    return EnergyReport(
+        physical=_energy_drift_from_dict(d["physical"]),
+        learned_hamiltonian=(_energy_drift_from_dict(learned) if learned is not None else None),
+    )
+
+
 @dataclass
 class EvaluationReport:
-    """Top-level evaluation report."""
+    """Top-level evaluation report.
+
+    `encounter_bins` is optional: stratified test files produce a populated
+    block, legacy/uniform files leave it None. Serialization omits the key
+    entirely when None (matches the EnergyReport.learned_hamiltonian pattern).
+    """
 
     metadata: EvaluationMetadata
     single_step: SingleStepReport
     rollout: RolloutReport
     energy: EnergyReport
+    encounter_bins: EncounterBinsReport | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "EvaluationReport":
         """Build a typed report from a parsed metrics.json dict."""
-        rollout = d["rollout"]
-        energy = d["energy"]
-        learned = energy.get("learned_hamiltonian")
-        curves = rollout.get("curves")
-        state_thresholds = rollout.get("state_mse_thresholds", rollout.get("thresholds", {}))
-        position_thresholds = rollout.get("position_mse_thresholds", state_thresholds)
-        state_final_finite_fraction = rollout.get(
-            "state_final_finite_fraction",
-            rollout.get("finite_final_fraction"),
-        )
-
+        encounter_bins_raw = d.get("encounter_bins")
         return cls(
             metadata=EvaluationMetadata(**d["metadata"]),
             single_step=_single_step_from_dict(d["single_step"]),
-            rollout=RolloutReport(
-                steps={k: _rollout_step_from_dict(v) for k, v in rollout["steps"].items()},
-                first_nonfinite_step=rollout["first_nonfinite_step"],
-                state_mse_thresholds=_divergence_from_dict(state_thresholds),
-                position_mse_thresholds=_divergence_from_dict(position_thresholds),
-                state_final_finite_fraction=state_final_finite_fraction,
-                curves=_rollout_curves_from_dict(curves) if curves is not None else None,
-            ),
-            energy=EnergyReport(
-                physical=_energy_drift_from_dict(energy["physical"]),
-                learned_hamiltonian=(
-                    _energy_drift_from_dict(learned) if learned is not None else None
-                ),
+            rollout=_rollout_report_from_dict(d["rollout"]),
+            energy=_energy_report_from_dict(d["energy"]),
+            encounter_bins=(
+                EncounterBinsReport.from_dict(encounter_bins_raw)
+                if encounter_bins_raw is not None
+                else None
             ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report top-level key order."""
-        return {
+        out: dict[str, Any] = {
             "metadata": self.metadata.to_dict(),
             "single_step": self.single_step.to_dict(),
             "rollout": self.rollout.to_dict(),
             "energy": self.energy.to_dict(),
         }
+        if self.encounter_bins is not None:
+            out["encounter_bins"] = self.encounter_bins.to_dict()
+        return out
 
 
 @dataclass

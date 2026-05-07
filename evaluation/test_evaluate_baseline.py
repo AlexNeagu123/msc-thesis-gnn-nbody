@@ -8,6 +8,8 @@ import h5py
 import numpy as np
 import pytest
 
+from data._io import write_trajectories
+from data._types import EncounterBin, Trajectories
 from evaluation._types import EvaluationReport
 from evaluation.evaluate_baseline import _resolve_output_dir, evaluate_baseline
 
@@ -20,6 +22,29 @@ def _write_h5(path: Path, n_traj: int = 2, n_steps: int = 4) -> None:
     with h5py.File(path, "w") as f:
         f.create_dataset("trajectories", data=trajectories)
         f.create_dataset("energies", data=np.zeros((n_traj, n_steps), dtype=np.float32))
+
+
+def _write_stratified_h5(path: Path, n_steps: int = 4) -> None:
+    """Write a 4-trajectory stratified fixture with two bins (extreme + smooth)."""
+    n_traj = 4
+    rng = np.random.default_rng(7)
+    states = rng.normal(size=(n_traj, n_steps, 3, 5)).astype(np.float32)
+    states[..., 4] = 1.0
+    energies = np.zeros((n_traj, n_steps), dtype=np.float32)
+
+    bins = (
+        EncounterBin(name="extreme", lo=0.0, hi=0.05),
+        EncounterBin(name="smooth", lo=0.05, hi=float("inf")),
+    )
+    bundle = Trajectories(
+        states=states,
+        energies=energies,
+        encounter_bin_id=np.array([0, 1, 0, 1], dtype=np.int64),
+        encounter_bin_name=np.array(["extreme", "smooth", "extreme", "smooth"]),
+        min_pairwise_distance=np.array([0.02, 0.5, 0.03, 1.0], dtype=np.float64),
+        encounter_bins=bins,
+    )
+    write_trajectories(path, bundle)
 
 
 def test_mean_state_baseline_writes_artifacts(tmp_path: Path) -> None:
@@ -120,3 +145,34 @@ def test_baseline_rejects_unknown_kind(tmp_path: Path) -> None:
             test_path=test_path,
             output_dir=tmp_path / "out",
         )
+
+
+def test_baseline_on_stratified_test_emits_encounter_bins(tmp_path: Path) -> None:
+    """Baseline evaluation on a stratified test file produces the per-bin block.
+
+    Mirrors the model-side test: read_trajectories now flows through
+    evaluate_baseline, so the shared build_evaluation_report path attaches
+    encounter_bins for baselines too.
+    """
+    test_path = tmp_path / "test.h5"
+    _write_stratified_h5(test_path)
+    output_dir = tmp_path / "out"
+
+    report = evaluate_baseline(
+        baseline="constant_velocity",
+        test_path=test_path,
+        output_dir=output_dir,
+        device="cpu",
+    )
+
+    assert report.encounter_bins is not None
+    bins = report.encounter_bins
+    assert {b.name for b in bins.bins} == {"extreme", "smooth"}
+    assert bins.bins[1].hi == float("inf")
+    assert bins.by_name["extreme"].count == 2
+    assert bins.by_name["smooth"].count == 2
+
+    data = json.loads((output_dir / "metrics.json").read_text())
+    assert "encounter_bins" in data
+    assert data["encounter_bins"]["bins"][1]["hi"] == "inf"
+    assert data["encounter_bins"]["by_name"]["smooth"]["count"] == 2

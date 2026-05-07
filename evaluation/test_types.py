@@ -8,7 +8,12 @@ soft guard: it loads if present, skips silently otherwise.
 import json
 from pathlib import Path
 
-from evaluation._types import EvaluationReport, SummaryRow
+from evaluation._types import (
+    EncounterBinDefinition,
+    EncounterBinsReport,
+    EvaluationReport,
+    SummaryRow,
+)
 
 
 def _egnn_report_dict() -> dict:
@@ -367,3 +372,157 @@ def test_summary_row_hgnn_appends_learned_h_columns() -> None:
     hgnn_cols = tuple(SummaryRow.from_report(hgnn_report).to_csv_row().keys())
 
     assert hgnn_cols == egnn_cols + _EXPECTED_LEARNED_H_COLUMNS
+
+
+def _bin_block_fixture() -> dict:
+    """Hand-written encounter_bins block reusing EGNN-shape sub-dicts.
+
+    Three bins, with the last one using the +inf top-of-range so the
+    sentinel encoding is exercised. Each per-bin block reuses the global
+    single_step / rollout / energy sub-dicts wholesale; this tests the
+    schema, not the per-bin numerics (those come in Block 2).
+    """
+    base = _egnn_report_dict()
+    return {
+        "bins": [
+            {"id": 0, "name": "extreme", "lo": 0.0, "hi": 0.01},
+            {"id": 1, "name": "close", "lo": 0.01, "hi": 0.05},
+            {"id": 2, "name": "smooth", "lo": 0.05, "hi": "inf"},
+        ],
+        "by_name": {
+            "extreme": {
+                "count": 12,
+                "d_min": {
+                    "mean": 0.005,
+                    "median": 0.005,
+                    "max": 0.0099,
+                    "p5": 0.001,
+                    "p50": 0.005,
+                },
+                "single_step": base["single_step"],
+                "rollout": base["rollout"],
+                "energy": base["energy"],
+            },
+            "close": {
+                "count": 30,
+                "d_min": {
+                    "mean": 0.025,
+                    "median": 0.025,
+                    "max": 0.0499,
+                    "p5": 0.012,
+                    "p50": 0.025,
+                },
+                "single_step": base["single_step"],
+                "rollout": base["rollout"],
+                "energy": base["energy"],
+            },
+            "smooth": {
+                "count": 58,
+                "d_min": {
+                    "mean": 0.5,
+                    "median": 0.4,
+                    "max": 5.0,
+                    "p5": 0.06,
+                    "p50": 0.4,
+                },
+                "single_step": base["single_step"],
+                "rollout": base["rollout"],
+                "energy": base["energy"],
+            },
+        },
+    }
+
+
+def _stratified_report_dict() -> dict:
+    """EGNN-shape report with an attached encounter_bins block."""
+    base = _egnn_report_dict()
+    base["encounter_bins"] = _bin_block_fixture()
+    return base
+
+
+def test_legacy_report_has_no_encounter_bins_field() -> None:
+    """Legacy metrics.json (no encounter_bins key) parses with field=None."""
+    report = EvaluationReport.from_dict(_egnn_report_dict())
+    assert report.encounter_bins is None
+
+
+def test_to_dict_omits_encounter_bins_when_none() -> None:
+    """encounter_bins=None must not emit the key in JSON output."""
+    report = EvaluationReport.from_dict(_egnn_report_dict())
+    out = report.to_dict()
+    assert "encounter_bins" not in out
+
+
+def test_stratified_report_round_trip() -> None:
+    """Report with encounter_bins block round-trips through from_dict/to_dict."""
+    d = _stratified_report_dict()
+    assert EvaluationReport.from_dict(d).to_dict() == d
+
+
+def test_encounter_bin_definition_inf_round_trip() -> None:
+    """Top-of-range hi=+inf encodes as "inf" sentinel and decodes back to +inf."""
+    definition = EncounterBinDefinition(id=5, name="smooth", lo=0.2, hi=float("inf"))
+    encoded = definition.to_dict()
+
+    assert encoded["hi"] == "inf"
+
+    decoded = EncounterBinDefinition.from_dict(encoded)
+    assert decoded.hi == float("inf")
+    assert decoded == definition
+
+
+def test_encounter_bin_definition_finite_hi_passes_through() -> None:
+    """Finite hi values are not touched by the sentinel encoding."""
+    definition = EncounterBinDefinition(id=0, name="extreme", lo=0.0, hi=0.01)
+    encoded = definition.to_dict()
+
+    assert encoded["hi"] == 0.01
+    assert EncounterBinDefinition.from_dict(encoded) == definition
+
+
+def test_encounter_bin_definition_negative_inf_not_aliased_to_sentinel() -> None:
+    """hi=-inf must not encode as the "inf" sentinel.
+
+    The "inf" sentinel is reserved for the top-of-range +inf only. Negative
+    infinity is invalid for a bin's upper bound, but the schema layer should
+    not silently relabel it as positive: it passes the raw float through and
+    lets the JSON write step (allow_nan=False) reject it.
+    """
+    definition = EncounterBinDefinition(id=0, name="bad", lo=0.0, hi=float("-inf"))
+    encoded = definition.to_dict()
+
+    assert encoded["hi"] != "inf"
+    assert encoded["hi"] == float("-inf")
+
+
+def test_encounter_bins_report_preserves_order() -> None:
+    """Canonical bin order in `bins` survives the to_dict/from_dict round-trip."""
+    block = _bin_block_fixture()
+    report = EncounterBinsReport.from_dict(block)
+
+    assert [b.name for b in report.bins] == ["extreme", "close", "smooth"]
+    assert [b.id for b in report.bins] == [0, 1, 2]
+
+    out = report.to_dict()
+    assert [b["name"] for b in out["bins"]] == ["extreme", "close", "smooth"]
+
+
+def test_encounter_bins_report_typed_access() -> None:
+    """EncounterBinsReport exposes attribute access on per-bin fields."""
+    report = EvaluationReport.from_dict(_stratified_report_dict())
+    assert report.encounter_bins is not None
+    assert report.encounter_bins.by_name["extreme"].count == 12
+    assert report.encounter_bins.by_name["smooth"].count == 58
+    assert report.encounter_bins.by_name["smooth"].d_min.median == 0.4
+    assert report.encounter_bins.by_name["close"].baseline_ratios is None
+
+
+def test_summary_row_columns_unchanged_for_stratified_report() -> None:
+    """Block 1 must NOT widen summary.csv: stratified report yields same columns."""
+    plain = EvaluationReport.from_dict(_egnn_report_dict())
+    stratified = EvaluationReport.from_dict(_stratified_report_dict())
+
+    plain_cols = tuple(SummaryRow.from_report(plain).to_csv_row().keys())
+    stratified_cols = tuple(SummaryRow.from_report(stratified).to_csv_row().keys())
+
+    assert stratified_cols == plain_cols

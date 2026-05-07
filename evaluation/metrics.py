@@ -138,10 +138,57 @@ def compute_rollout_mse(
     )
 
 
+def subset_rollout_mse(
+    rollout_mse: RolloutMSE,
+    mask: npt.NDArray[np.bool_],
+) -> RolloutMSE:
+    """Re-aggregate a rollout MSE over the per-trajectory subset selected by mask.
+
+    Used by stratified evaluation to compute per-bin rollout summaries from
+    an already-computed RolloutMSE, skipping a full re-run of the rollout.
+    Empty masks (no trajectories in this bin) yield NaN curves so callers can
+    surface "no data" without RuntimeWarnings from aggregation over an empty
+    axis.
+    """
+    return RolloutMSE(
+        state=_subset_rollout_metric_series(rollout_mse.state, mask),
+        position=_subset_rollout_metric_series(rollout_mse.position, mask),
+        velocity=_subset_rollout_metric_series(rollout_mse.velocity, mask),
+    )
+
+
 def _rollout_metric_series(diff: npt.NDArray[np.floating]) -> RolloutMetricSeries:
     """Compute per-trajectory and aggregate MSE for one rollout state slice."""
     with np.errstate(over="ignore", invalid="ignore"):
         per_trajectory = (diff**2).mean(axis=(2, 3))
+
+    finite = np.where(np.isfinite(per_trajectory), per_trajectory, np.nan)
+    return RolloutMetricSeries(
+        per_trajectory=per_trajectory,
+        mean=np.nanmean(finite, axis=0),
+        median=np.nanmedian(finite, axis=0),
+        std=np.nanstd(finite, axis=0),
+        finite_fraction=np.isfinite(per_trajectory).mean(axis=0),
+    )
+
+
+def _subset_rollout_metric_series(
+    series: RolloutMetricSeries,
+    mask: npt.NDArray[np.bool_],
+) -> RolloutMetricSeries:
+    """Return one rollout MSE series re-aggregated over a per-trajectory subset."""
+    per_trajectory = series.per_trajectory[mask]
+    n_steps = series.per_trajectory.shape[1]
+
+    if per_trajectory.shape[0] == 0:
+        nan_curve = np.full(n_steps, np.nan)
+        return RolloutMetricSeries(
+            per_trajectory=per_trajectory,
+            mean=nan_curve,
+            median=nan_curve.copy(),
+            std=nan_curve.copy(),
+            finite_fraction=np.zeros(n_steps),
+        )
 
     finite = np.where(np.isfinite(per_trajectory), per_trajectory, np.nan)
     return RolloutMetricSeries(
