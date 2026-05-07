@@ -25,6 +25,7 @@ from evaluation._types import (
     EvaluationMetadata,
     EvaluationReport,
     MseSummary,
+    PerBinBaselineRatios,
     RolloutCurves,
     RolloutMetricCurves,
     RolloutMetricSeries,
@@ -42,9 +43,11 @@ from evaluation.metrics import (
     run_all_rollouts,
     subset_rollout_mse,
 )
+from evaluation.rollout_score import BaselineEnvelopeComputer
 from models.hgnn import HGNN
 from training._io import load_checkpoint, load_config
 from training._types import Checkpoint, TrainConfig
+from training.rollout_score import DEFAULT_ANCHOR_STEPS, compute_rollout_score
 from training.train import build_model
 from utils import get_logger
 
@@ -80,6 +83,15 @@ def evaluate_checkpoint(
     predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
 
+    envelope_computer: BaselineEnvelopeComputer | None = None
+    if test_bundle.encounter_bin_id is not None:
+        envelope_computer = BaselineEnvelopeComputer(
+            train_path=cfg.data.train_path,
+            dt=cfg.data.dt,
+            device=torch_device,
+        )
+        envelope_computer.fit(test_traj)
+
     n_traj, n_frames, n_particles, _state_dim = test_traj.shape
     metadata = EvaluationMetadata(
         model_name=cfg.model.name,
@@ -107,6 +119,7 @@ def evaluate_checkpoint(
         metadata=metadata,
         device=torch_device,
         test_bundle=test_bundle,
+        envelope_computer=envelope_computer,
     )
 
     target_dir = _output_dir(output_dir, cfg.model.name, checkpoint_path)
@@ -128,13 +141,17 @@ def build_evaluation_report(
     metadata: EvaluationMetadata,
     device: torch.device,
     test_bundle: Trajectories | None = None,
+    envelope_computer: BaselineEnvelopeComputer | None = None,
     steps: list[int] | None = None,
 ) -> EvaluationReport:
     """Build the typed evaluation report from precomputed metrics and caller metadata.
 
     When `test_bundle` carries stratification fields, the report also gets
     a populated `encounter_bins` block built from per-bin slices of the
-    same metric arrays. Otherwise the field stays None (legacy / uniform).
+    same metric arrays. When `envelope_computer` is provided (already
+    fit on the test trajectories), each non-empty per-bin block also
+    receives baseline-normalized rollout-score diagnostics. Otherwise
+    those fields stay None.
     """
     if steps is None:
         steps = _summary_steps(test_traj.shape[1] - 1)
@@ -160,6 +177,7 @@ def build_evaluation_report(
             steps=steps,
             device=device,
             n_transitions=metadata.n_transitions,
+            envelope_computer=envelope_computer,
         )
 
     return EvaluationReport(
@@ -215,6 +233,7 @@ def _build_encounter_bins_report(
     steps: list[int],
     device: torch.device,
     n_transitions: int,
+    envelope_computer: BaselineEnvelopeComputer | None,
 ) -> EncounterBinsReport:
     """Build the per-bin encounter report from already-computed metric arrays.
 
@@ -248,6 +267,7 @@ def _build_encounter_bins_report(
             steps=steps,
             device=device,
             n_transitions=n_transitions,
+            envelope_computer=envelope_computer,
         )
 
     return EncounterBinsReport(bins=bin_definitions, by_name=by_name)
@@ -264,6 +284,7 @@ def _build_per_bin_report(
     steps: list[int],
     device: torch.device,
     n_transitions: int,
+    envelope_computer: BaselineEnvelopeComputer | None,
 ) -> EncounterBinReport:
     """Build one per-bin report by slicing already-computed metric arrays."""
     count = int(mask.sum())
@@ -286,12 +307,48 @@ def _build_per_bin_report(
     bin_predicted = predicted[mask]
     energy = _build_energy_report(model, bin_predicted, device)
 
+    baseline_ratios = None
+    if count > 0 and envelope_computer is not None:
+        baseline_ratios = _build_baseline_ratios(
+            bin_rollout_mse=bin_rollout_mse,
+            mask=mask,
+            envelope_computer=envelope_computer,
+        )
+
     return EncounterBinReport(
         count=count,
         d_min=d_min_summary,
         single_step=single_step,
         rollout=rollout,
         energy=energy,
+        baseline_ratios=baseline_ratios,
+    )
+
+
+def _build_baseline_ratios(
+    *,
+    bin_rollout_mse: RolloutMSE,
+    mask: npt.NDArray[np.bool_],
+    envelope_computer: BaselineEnvelopeComputer,
+) -> PerBinBaselineRatios:
+    """Score the per-bin model curve against the per-bin baseline envelope.
+
+    Reuses training/rollout_score.py:compute_rollout_score so the
+    per-bin score has the same semantics as the validation-side score
+    (geometric-mean log ratio, dominance horizon, fraction beating
+    baseline). Anchor steps default to DEFAULT_ANCHOR_STEPS so this
+    block stays consistent with the validation-time score in Block 4.
+    """
+    model_curve = bin_rollout_mse.state.median[1:]
+    envelope = envelope_computer.envelope_for_mask(mask)
+    score = compute_rollout_score(model_curve, envelope, anchor_steps=DEFAULT_ANCHOR_STEPS)
+
+    return PerBinBaselineRatios(
+        score=_float(score.score),
+        state_mse_ratios={s: _float(r) for s, r in score.ratios_at_step.items()},
+        dominance_horizon=int(score.dominance_horizon),
+        fraction_beating_baseline=_float(score.fraction_beating_baseline),
+        final_ratio=_float(score.final_ratio),
     )
 
 

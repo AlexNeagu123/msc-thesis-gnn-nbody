@@ -447,14 +447,61 @@ class EncounterBinDefinition:
 
 
 @dataclass
+class PerBinBaselineRatios:
+    """Baseline-normalized rollout score restricted to one encounter bin.
+
+    Mirrors training/_types.py:RolloutScore semantics (geometric-mean log
+    ratio, anchor-step ratios, dominance horizon, fraction beating
+    baseline, final ratio) projected onto the JSON layer:
+      - drops the dense `ratios` array (already implied by the per-bin
+        rollout curves elsewhere in the report)
+      - stringifies anchor-step keys for JSON, ints in memory
+      - nests anchor-step ratios under `state_mse` so future per-metric
+        ratios (position_mse, velocity_mse) can sit alongside without a
+        schema break
+
+    Empty bins skip this block entirely (`baseline_ratios = None` on the
+    parent report); a populated PerBinBaselineRatios always implies a
+    non-empty bin with a defined model and envelope curve.
+    """
+
+    score: float | None
+    state_mse_ratios: dict[int, float | None]
+    dominance_horizon: int | None
+    fraction_beating_baseline: float | None
+    final_ratio: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize, stringifying anchor-step keys and nesting under "state_mse"."""
+        return {
+            "score": self.score,
+            "state_mse": {str(k): v for k, v in self.state_mse_ratios.items()},
+            "dominance_horizon": self.dominance_horizon,
+            "fraction_beating_baseline": self.fraction_beating_baseline,
+            "final_ratio": self.final_ratio,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "PerBinBaselineRatios":
+        """Build from a JSON-shaped dict, parsing string anchor-step keys back to int."""
+        return cls(
+            score=d.get("score"),
+            state_mse_ratios={int(k): v for k, v in d["state_mse"].items()},
+            dominance_horizon=d.get("dominance_horizon"),
+            fraction_beating_baseline=d.get("fraction_beating_baseline"),
+            final_ratio=d.get("final_ratio"),
+        )
+
+
+@dataclass
 class EncounterBinReport:
     """Per-bin metrics block: one entry under encounter_bins.by_name.
 
     Mirrors the top-level evaluation report structure (single-step,
     rollout, energy) restricted to trajectories whose true minimum
     pairwise distance falls in this bin's interval. `baseline_ratios`
-    is filled in Block 3 (per-bin baseline-normalized ratios at the
-    standard anchor steps); Block 1 leaves it None.
+    carries baseline-normalized rollout-score diagnostics for non-empty
+    bins; empty bins leave it None.
     """
 
     count: int
@@ -462,7 +509,7 @@ class EncounterBinReport:
     single_step: SingleStepReport
     rollout: RolloutReport
     energy: EnergyReport
-    baseline_ratios: dict[str, float | None] | None = None
+    baseline_ratios: PerBinBaselineRatios | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize, omitting baseline_ratios when absent."""
@@ -474,19 +521,24 @@ class EncounterBinReport:
             "energy": self.energy.to_dict(),
         }
         if self.baseline_ratios is not None:
-            out["baseline_ratios"] = self.baseline_ratios
+            out["baseline_ratios"] = self.baseline_ratios.to_dict()
         return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "EncounterBinReport":
         """Build from a JSON-shaped dict, reusing the shared sub-parsers."""
+        baseline_ratios_raw = d.get("baseline_ratios")
         return cls(
             count=int(d["count"]),
             d_min=DistanceSummary(**d["d_min"]),
             single_step=_single_step_from_dict(d["single_step"]),
             rollout=_rollout_report_from_dict(d["rollout"]),
             energy=_energy_report_from_dict(d["energy"]),
-            baseline_ratios=d.get("baseline_ratios"),
+            baseline_ratios=(
+                PerBinBaselineRatios.from_dict(baseline_ratios_raw)
+                if baseline_ratios_raw is not None
+                else None
+            ),
         )
 
 

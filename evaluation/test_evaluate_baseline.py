@@ -152,15 +152,19 @@ def test_baseline_on_stratified_test_emits_encounter_bins(tmp_path: Path) -> Non
 
     Mirrors the model-side test: read_trajectories now flows through
     evaluate_baseline, so the shared build_evaluation_report path attaches
-    encounter_bins for baselines too.
+    encounter_bins for baselines too. Block 3 made train_path required
+    even for non-fitted baselines so the envelope can be built.
     """
+    train_path = tmp_path / "train.h5"
     test_path = tmp_path / "test.h5"
+    _write_h5(train_path)
     _write_stratified_h5(test_path)
     output_dir = tmp_path / "out"
 
     report = evaluate_baseline(
         baseline="constant_velocity",
         test_path=test_path,
+        train_path=train_path,
         output_dir=output_dir,
         device="cpu",
     )
@@ -176,3 +180,53 @@ def test_baseline_on_stratified_test_emits_encounter_bins(tmp_path: Path) -> Non
     assert "encounter_bins" in data
     assert data["encounter_bins"]["bins"][1]["hi"] == "inf"
     assert data["encounter_bins"]["by_name"]["smooth"]["count"] == 2
+
+
+def test_baseline_on_stratified_without_train_path_raises(tmp_path: Path) -> None:
+    """Stratified test file requires train_path even for non-fitted baselines.
+
+    Block 3 needs train_path to build the baseline envelope (which always
+    includes mean_velocity and mean_state). Silently dropping the per-bin
+    ratios for non-fitted baselines would produce inconsistent reports.
+    """
+    test_path = tmp_path / "test.h5"
+    _write_stratified_h5(test_path)
+
+    with pytest.raises(ValueError, match="stratified baseline ratios require --train-path"):
+        evaluate_baseline(
+            baseline="persistence",
+            test_path=test_path,
+            output_dir=tmp_path / "out",
+            device="cpu",
+        )
+
+
+def test_baseline_on_stratified_emits_baseline_ratios(tmp_path: Path) -> None:
+    """Per-bin baseline_ratios block is populated for non-empty bins."""
+    train_path = tmp_path / "train.h5"
+    test_path = tmp_path / "test.h5"
+    _write_h5(train_path)
+    _write_stratified_h5(test_path)
+    output_dir = tmp_path / "out"
+
+    report = evaluate_baseline(
+        baseline="persistence",
+        test_path=test_path,
+        train_path=train_path,
+        output_dir=output_dir,
+        device="cpu",
+    )
+
+    assert report.encounter_bins is not None
+    extreme = report.encounter_bins.by_name["extreme"]
+    assert extreme.baseline_ratios is not None
+    # anchor-step keys are ints in memory, stringified in JSON
+    assert all(isinstance(k, int) for k in extreme.baseline_ratios.state_mse_ratios)
+
+    data = json.loads((output_dir / "metrics.json").read_text())
+    ratios_json = data["encounter_bins"]["by_name"]["extreme"]["baseline_ratios"]
+    assert "score" in ratios_json
+    assert "dominance_horizon" in ratios_json
+    assert "fraction_beating_baseline" in ratios_json
+    assert "final_ratio" in ratios_json
+    assert all(isinstance(k, str) for k in ratios_json["state_mse"])

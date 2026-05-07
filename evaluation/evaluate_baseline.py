@@ -24,6 +24,7 @@ from evaluation.metrics import (
     compute_single_step_metrics,
     run_all_rollouts,
 )
+from evaluation.rollout_score import BaselineEnvelopeComputer
 from models.baselines import (
     ConstantVelocityBaseline,
     MeanStateBaseline,
@@ -66,9 +67,26 @@ def evaluate_baseline(
     test_traj = test_bundle.states
     n_traj, n_frames, n_particles, _state_dim = test_traj.shape
 
+    # Stratified test files require train_path so the baseline-envelope path can
+    # fit MeanVelocityBaseline / MeanStateBaseline; silently dropping the per-bin
+    # ratio block would produce confusingly incomplete reports.
+    if test_bundle.encounter_bin_id is not None and train_path is None:
+        msg = "stratified baseline ratios require --train-path to fit baseline envelope"
+        raise ValueError(msg)
+
     single_step_metrics = compute_single_step_metrics(model, str(test_path), torch_device)
     predicted = run_all_rollouts(model, test_traj, torch_device)
     rollout_mse = compute_rollout_mse(test_traj, predicted)
+
+    envelope_computer: BaselineEnvelopeComputer | None = None
+    if test_bundle.encounter_bin_id is not None:
+        assert train_path is not None  # narrowed by the guard above
+        envelope_computer = BaselineEnvelopeComputer(
+            train_path=train_path,
+            dt=dt,
+            device=torch_device,
+        )
+        envelope_computer.fit(test_traj)
 
     metadata = EvaluationMetadata(
         model_name=f"baseline_{baseline}",
@@ -97,6 +115,7 @@ def evaluate_baseline(
         metadata=metadata,
         device=torch_device,
         test_bundle=test_bundle,
+        envelope_computer=envelope_computer,
     )
 
     target_dir = _resolve_output_dir(output_dir, baseline)

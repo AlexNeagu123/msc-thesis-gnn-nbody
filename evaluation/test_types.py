@@ -10,8 +10,10 @@ from pathlib import Path
 
 from evaluation._types import (
     EncounterBinDefinition,
+    EncounterBinReport,
     EncounterBinsReport,
     EvaluationReport,
+    PerBinBaselineRatios,
     SummaryRow,
 )
 
@@ -526,3 +528,73 @@ def test_summary_row_columns_unchanged_for_stratified_report() -> None:
     stratified_cols = tuple(SummaryRow.from_report(stratified).to_csv_row().keys())
 
     assert stratified_cols == plain_cols
+
+
+def _baseline_ratios_fixture() -> dict:
+    """Hand-written baseline_ratios block matching the JSON shape."""
+    return {
+        "score": -0.12,
+        "state_mse": {
+            "10": 0.82,
+            "20": 1.04,
+            "50": 2.10,
+            "100": None,
+            "199": None,
+        },
+        "dominance_horizon": 12,
+        "fraction_beating_baseline": 0.18,
+        "final_ratio": 4.2,
+    }
+
+
+def test_per_bin_baseline_ratios_round_trip_preserves_int_keys() -> None:
+    """JSON anchor-step keys are strings on disk and ints in memory."""
+    d = _baseline_ratios_fixture()
+    parsed = PerBinBaselineRatios.from_dict(d)
+
+    # in-memory keys must be ints, not strings
+    assert set(parsed.state_mse_ratios.keys()) == {10, 20, 50, 100, 199}
+    assert all(isinstance(k, int) for k in parsed.state_mse_ratios)
+    assert parsed.score == -0.12
+    assert parsed.dominance_horizon == 12
+
+    # round-trip back to JSON: keys stringified again
+    out = parsed.to_dict()
+    assert out == d
+    assert all(isinstance(k, str) for k in out["state_mse"])
+
+
+def test_per_bin_baseline_ratios_in_encounter_bin_report_round_trip() -> None:
+    """Populated baseline_ratios survives EncounterBinReport.from_dict/to_dict."""
+    base = _egnn_report_dict()
+    bin_dict = {
+        "count": 12,
+        "d_min": {"mean": 0.005, "median": 0.005, "max": 0.0099, "p5": 0.001, "p50": 0.005},
+        "single_step": base["single_step"],
+        "rollout": base["rollout"],
+        "energy": base["energy"],
+        "baseline_ratios": _baseline_ratios_fixture(),
+    }
+    report = EncounterBinReport.from_dict(bin_dict)
+
+    assert report.baseline_ratios is not None
+    assert report.baseline_ratios.state_mse_ratios[10] == 0.82
+    assert report.baseline_ratios.state_mse_ratios[100] is None
+
+    assert report.to_dict() == bin_dict
+
+
+def test_encounter_bin_report_omits_baseline_ratios_when_none() -> None:
+    """Empty-bin path: baseline_ratios=None must not emit the key."""
+    base = _egnn_report_dict()
+    bin_dict = {
+        "count": 0,
+        "d_min": {"mean": None, "median": None, "max": None, "p5": None, "p50": None},
+        "single_step": base["single_step"],
+        "rollout": base["rollout"],
+        "energy": base["energy"],
+    }
+    report = EncounterBinReport.from_dict(bin_dict)
+
+    assert report.baseline_ratios is None
+    assert "baseline_ratios" not in report.to_dict()

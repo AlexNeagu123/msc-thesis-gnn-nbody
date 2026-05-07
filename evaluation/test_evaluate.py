@@ -458,3 +458,87 @@ def test_summary_csv_unchanged_for_stratified_test_file(tmp_path: Path) -> None:
         strat_cols = list(csv.DictReader(f).fieldnames or [])
 
     assert legacy_cols == strat_cols
+
+
+def test_per_bin_baseline_ratios_populated(tmp_path: Path) -> None:
+    """Stratified evaluation attaches baseline_ratios to each non-empty bin."""
+    train_path = tmp_path / "train.h5"
+    val_path = tmp_path / "val.h5"
+    test_path = tmp_path / "test.h5"
+    _write_h5(train_path)
+    _write_h5(val_path)
+    _write_stratified_h5(test_path)
+
+    cfg = _cfg(train_path, val_path, "egnn")
+    config_path = tmp_path / "egnn.yaml"
+    _write_config(config_path, cfg)
+
+    model = EGNN(hidden_dim=8, n_layers=1)
+    checkpoint_path = tmp_path / "best.pt"
+    torch.save(
+        Checkpoint(epoch=1, model=model.state_dict(), optimizer={}, val_loss=0.1),
+        checkpoint_path,
+    )
+
+    output_dir = tmp_path / "eval"
+    report = evaluate_checkpoint(
+        cfg,
+        checkpoint_path,
+        config_path=config_path,
+        test_path=test_path,
+        output_dir=output_dir,
+        device="cpu",
+    )
+
+    assert report.encounter_bins is not None
+    for bin_name in ("extreme", "smooth"):
+        ratios = report.encounter_bins.by_name[bin_name].baseline_ratios
+        assert ratios is not None, f"baseline_ratios missing for bin {bin_name!r}"
+        assert isinstance(ratios.dominance_horizon, int)
+        # anchor-step keys are ints in memory
+        assert all(isinstance(k, int) for k in ratios.state_mse_ratios)
+
+
+def test_baseline_ratios_json_shape(tmp_path: Path) -> None:
+    """JSON output of baseline_ratios pins the exact agreed shape."""
+    train_path = tmp_path / "train.h5"
+    val_path = tmp_path / "val.h5"
+    test_path = tmp_path / "test.h5"
+    _write_h5(train_path)
+    _write_h5(val_path)
+    _write_stratified_h5(test_path)
+
+    cfg = _cfg(train_path, val_path, "egnn")
+    config_path = tmp_path / "egnn.yaml"
+    _write_config(config_path, cfg)
+
+    model = EGNN(hidden_dim=8, n_layers=1)
+    checkpoint_path = tmp_path / "best.pt"
+    torch.save(
+        Checkpoint(epoch=1, model=model.state_dict(), optimizer={}, val_loss=0.1),
+        checkpoint_path,
+    )
+
+    output_dir = tmp_path / "eval"
+    evaluate_checkpoint(
+        cfg,
+        checkpoint_path,
+        config_path=config_path,
+        test_path=test_path,
+        output_dir=output_dir,
+        device="cpu",
+    )
+
+    data = json.loads((output_dir / "metrics.json").read_text())
+    ratios_json = data["encounter_bins"]["by_name"]["extreme"]["baseline_ratios"]
+    assert set(ratios_json) == {
+        "score",
+        "state_mse",
+        "dominance_horizon",
+        "fraction_beating_baseline",
+        "final_ratio",
+    }
+    # JSON anchor-step keys are strings; values are floats or null
+    assert all(isinstance(k, str) for k in ratios_json["state_mse"])
+    for v in ratios_json["state_mse"].values():
+        assert v is None or isinstance(v, float | int)
