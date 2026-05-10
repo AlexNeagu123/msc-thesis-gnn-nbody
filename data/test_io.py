@@ -73,7 +73,7 @@ def test_round_trip_preserves_metadata(tmp_path: Path) -> None:
 
 
 def test_read_tolerates_missing_metadata(tmp_path: Path) -> None:
-    """Files written without metadata (test fixtures, legacy) read cleanly."""
+    """Files written without a metadata group (test fixtures) read cleanly."""
     rng = np.random.default_rng(0)
     bare = Trajectories(
         states=rng.normal(size=(1, 3, 3, 5)),
@@ -199,7 +199,7 @@ def _make_stratified(**overrides: object) -> StratifiedConfig:
 
 
 def test_data_gen_config_without_stratified_key_is_none(tmp_path: Path) -> None:
-    """Legacy YAML files without a stratified section parse as stratified=None."""
+    """YAML files without a stratified section parse as stratified=None (uniform mode)."""
     path = tmp_path / "data.yaml"
     path.write_text(yaml.safe_dump(_base_data_yaml()))
 
@@ -567,9 +567,9 @@ def test_round_trip_preserves_inf_in_bin_bounds(tmp_path: Path) -> None:
     assert loaded.encounter_bins[-1].hi == float("inf")
 
 
-def test_legacy_file_yields_none_for_stratification(tmp_path: Path) -> None:
+def test_non_stratified_file_yields_none_for_stratification(tmp_path: Path) -> None:
     """A non-stratified file produces None for all four stratification fields."""
-    path = tmp_path / "legacy.h5"
+    path = tmp_path / "uniform.h5"
     write_trajectories(path, _example_trajectories())
 
     loaded = read_trajectories(path)

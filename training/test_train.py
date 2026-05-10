@@ -645,10 +645,10 @@ def test_init_checkpoint_rejects_model_mismatch(make_cfg: TrainConfig, tmp_path:
         Trainer(make_cfg, model=DummyModel(), init_checkpoint=ckpt_path)
 
 
-def test_init_checkpoint_accepts_legacy_no_model_name(
+def test_init_checkpoint_accepts_checkpoint_without_model_name(
     make_cfg: TrainConfig, tmp_path: Path
 ) -> None:
-    """A legacy checkpoint with model_name=None loads without error."""
+    """A checkpoint with model_name=None loads without error (default field value)."""
     ckpt_path = tmp_path / "init.pt"
     _save_dummy_checkpoint(
         ckpt_path,
@@ -783,18 +783,104 @@ def test_training_params_rejects_mismatched_curriculum_clip_norms_length() -> No
 
 def test_training_params_rejects_non_positive_curriculum_clip_norms() -> None:
     """Every per-stage clip value must be strictly positive."""
-    with pytest.raises(ValueError, match="curriculum_gradient_clip_norms entry must be > 0"):
+    with pytest.raises(
+        ValueError, match="curriculum_gradient_clip_norms entry must be a finite float > 0"
+    ):
         _params(
             curriculum_horizons=[1, 5],
             curriculum_epochs=[3, 2],
             curriculum_gradient_clip_norms=[1.0, 0.0],
         )
-    with pytest.raises(ValueError, match="curriculum_gradient_clip_norms entry must be > 0"):
+    with pytest.raises(
+        ValueError, match="curriculum_gradient_clip_norms entry must be a finite float > 0"
+    ):
         _params(
             curriculum_horizons=[1, 5],
             curriculum_epochs=[3, 2],
             curriculum_gradient_clip_norms=[1.0, -0.1],
         )
+
+
+def test_training_params_rejects_non_finite_curriculum_clip_norms() -> None:
+    """nan/+inf/-inf must not slip through into gradient clipping."""
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(
+            ValueError, match="curriculum_gradient_clip_norms entry must be a finite float > 0"
+        ):
+            _params(
+                curriculum_horizons=[1, 5],
+                curriculum_epochs=[3, 2],
+                curriculum_gradient_clip_norms=[1.0, bad],
+            )
+
+
+def test_training_params_rejects_curriculum_lrs_in_single_horizon_mode() -> None:
+    """A curriculum-only field set without a schedule is a config bug, not a no-op."""
+    with pytest.raises(
+        ValueError,
+        match="curriculum_lrs is only valid with a curriculum schedule",
+    ):
+        _params(epochs=1, curriculum_lrs=[1e-3])
+
+
+def test_training_params_curriculum_accepts_lrs_none_and_falls_back() -> None:
+    """Curriculum without explicit per-stage LRs uses the base lr field."""
+    params = _params(
+        curriculum_horizons=[1, 5],
+        curriculum_epochs=[3, 2],
+        lr=2.5e-4,
+    )
+
+    assert params.curriculum_lrs is None
+    assert params.lr == 2.5e-4
+
+
+def test_training_params_curriculum_accepts_matching_lrs() -> None:
+    """A per-stage LR list of the same length as horizons is the happy path."""
+    params = _params(
+        curriculum_horizons=[1, 5, 10],
+        curriculum_epochs=[3, 2, 1],
+        curriculum_lrs=[1e-4, 5e-5, 1e-5],
+    )
+
+    assert params.curriculum_lrs == [1e-4, 5e-5, 1e-5]
+
+
+def test_training_params_rejects_mismatched_curriculum_lrs_length() -> None:
+    """Per-stage LR list length must match the number of stages."""
+    with pytest.raises(ValueError, match=r"curriculum_lrs .* must have the same length"):
+        _params(
+            curriculum_horizons=[1, 5, 10],
+            curriculum_epochs=[3, 2, 1],
+            curriculum_lrs=[1e-4, 5e-5],
+        )
+
+
+def test_training_params_rejects_non_positive_curriculum_lrs() -> None:
+    """Every per-stage LR value must be strictly positive."""
+    with pytest.raises(ValueError, match="curriculum_lrs entry must be a finite float > 0"):
+        _params(
+            curriculum_horizons=[1, 5],
+            curriculum_epochs=[3, 2],
+            curriculum_lrs=[1e-4, 0.0],
+        )
+    with pytest.raises(ValueError, match="curriculum_lrs entry must be a finite float > 0"):
+        _params(
+            curriculum_horizons=[1, 5],
+            curriculum_epochs=[3, 2],
+            curriculum_lrs=[1e-4, -1e-5],
+        )
+
+
+def test_training_params_rejects_non_finite_curriculum_lrs() -> None:
+    """nan/+inf/-inf must not slip through into optimizer param groups."""
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="curriculum_lrs entry must be a finite float > 0"):
+            _params(
+                curriculum_horizons=[1, 5],
+                curriculum_epochs=[3, 2],
+                curriculum_lrs=[1e-4, bad],
+            )
 
 
 def test_training_params_stability_flags_round_trip() -> None:
@@ -1484,6 +1570,71 @@ def test_optimizer_reset_logs_horizon_at_transition(
         if "optimizer reset at stage transition" in r.getMessage() and "horizon=5" in r.getMessage()
     ]
     assert len(matching) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_curriculum_lrs_applied_when_optimizer_is_reset(make_cfg: TrainConfig) -> None:
+    """With reset_optimizer_on_stage=True, the fresh optimizer starts at the stage LR."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 5], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(
+            cfg.training,
+            reset_optimizer_on_stage=True,
+            curriculum_lrs=[1e-3, 5e-4],
+        ),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+
+    trainer.run()
+
+    assert trainer.optimizer is not initial_optimizer
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(5e-4)
+
+
+def test_curriculum_lrs_applied_when_optimizer_is_preserved(make_cfg: TrainConfig) -> None:
+    """With reset_optimizer_on_stage=False, the existing optimizer's LR is updated per stage."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 5], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(
+            cfg.training,
+            reset_optimizer_on_stage=False,
+            curriculum_lrs=[1e-3, 5e-4],
+        ),
+    )
+
+    trainer = Trainer(cfg, model=DummyModel())
+    initial_optimizer = trainer.optimizer
+
+    trainer.run()
+
+    assert trainer.optimizer is initial_optimizer
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(5e-4)
+
+
+def test_curriculum_lrs_logged_per_stage_in_order(
+    make_cfg: TrainConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each stage-start log line reflects the per-stage LR (not the base lr)."""
+    cfg = _curriculum_cfg(make_cfg, horizons=[1, 5], epochs=[1, 1])
+    cfg = replace(
+        cfg,
+        training=replace(cfg.training, lr=1e-2, curriculum_lrs=[1e-3, 5e-4]),
+    )
+
+    with caplog.at_level("INFO", logger="training.train"):
+        train(cfg, model=DummyModel())
+
+    stage_lrs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("stage ") and "start" in r.getMessage()
+    ]
+    assert len(stage_lrs) == 2, stage_lrs
+    assert "lr=1.00e-03" in stage_lrs[0], stage_lrs[0]
+    assert "lr=5.00e-04" in stage_lrs[1], stage_lrs[1]
 
 
 # --- artifact dir override ---

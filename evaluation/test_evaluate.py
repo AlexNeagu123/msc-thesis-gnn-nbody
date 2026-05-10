@@ -6,6 +6,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 import torch
 
 from data._io import write_trajectories
@@ -134,26 +135,18 @@ def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
     assert _normalization_stats(cfg, checkpoint) == (12.5, 3.25)
 
 
-def test_default_output_dir_for_legacy_checkpoint_falls_back_to_results() -> None:
-    """Legacy `checkpoints/...` layout keeps writing reports under results/."""
-    path = _output_dir(None, "egnn", Path("checkpoints/egnn/20260416_234825/best.pt"))
-
-    assert path == Path("results/evaluation/egnn/20260416_234825")
-
-
 def test_default_output_dir_for_canonical_runs_checkpoint_colocates() -> None:
     """Canonical `runs/...` checkpoint puts the report next to the checkpoint."""
-    ckpt = Path("runs/curriculum/egnn/n5000/20260504_120000/best.pt")
+    ckpt = Path("runs/egnn/20260507_225609/best.pt")
     path = _output_dir(None, "egnn", ckpt)
 
-    assert path == Path("runs/curriculum/egnn/n5000/20260504_120000/evaluation")
+    assert path == Path("runs/egnn/20260507_225609/evaluation")
 
 
-def test_default_output_dir_works_for_other_canonical_modes() -> None:
-    """Detection should not be specific to one mode; any `runs/` ancestor counts."""
-    for mode in ("single", "scaling", "sweep", "noise_sweep"):
-        ckpt = Path(f"runs/{mode}/egnn/foo/20260101_000000/best.pt")
-        assert _output_dir(None, "egnn", ckpt) == ckpt.parent / "evaluation"
+def test_default_output_dir_raises_when_no_run_ancestor() -> None:
+    """Checkpoint outside any `runs/` ancestor with no explicit output_dir raises."""
+    with pytest.raises(ValueError, match="cannot infer output directory"):
+        _output_dir(None, "egnn", Path("checkpoints/egnn/20260416_234825/best.pt"))
 
 
 def test_explicit_output_dir_wins_over_canonical_default() -> None:
@@ -272,7 +265,7 @@ def test_evaluate_hgnn_reports_learned_hamiltonian(tmp_path: Path) -> None:
     assert report.energy.learned_hamiltonian is not None
 
 
-def test_legacy_test_file_yields_no_encounter_bins_block(tmp_path: Path) -> None:
+def test_non_stratified_test_file_yields_no_encounter_bins_block(tmp_path: Path) -> None:
     """Non-stratified h5 evaluation produces report.encounter_bins=None and omits the key."""
     train_path = tmp_path / "train.h5"
     val_path = tmp_path / "val.h5"
@@ -409,16 +402,14 @@ def test_per_bin_rollout_matches_manual_slicing(tmp_path: Path) -> None:
 
 
 def test_summary_csv_unchanged_for_stratified_test_file(tmp_path: Path) -> None:
-    """Block 2 must not widen summary.csv columns even with stratified data."""
-    # baseline: legacy test file
-    legacy_test = tmp_path / "legacy_test.h5"
+    """Stratified data must not widen summary.csv columns vs a non-stratified test file."""
+    plain_test = tmp_path / "plain_test.h5"
     train_path = tmp_path / "train.h5"
     val_path = tmp_path / "val.h5"
     _write_h5(train_path)
     _write_h5(val_path)
-    _write_h5(legacy_test)
+    _write_h5(plain_test)
 
-    # stratified test file
     strat_test = tmp_path / "strat_test.h5"
     _write_stratified_h5(strat_test)
 
@@ -433,14 +424,14 @@ def test_summary_csv_unchanged_for_stratified_test_file(tmp_path: Path) -> None:
         checkpoint_path,
     )
 
-    legacy_dir = tmp_path / "eval_legacy"
+    plain_dir = tmp_path / "eval_plain"
     strat_dir = tmp_path / "eval_strat"
     evaluate_checkpoint(
         cfg,
         checkpoint_path,
         config_path=config_path,
-        test_path=legacy_test,
-        output_dir=legacy_dir,
+        test_path=plain_test,
+        output_dir=plain_dir,
         device="cpu",
     )
     evaluate_checkpoint(
@@ -452,12 +443,12 @@ def test_summary_csv_unchanged_for_stratified_test_file(tmp_path: Path) -> None:
         device="cpu",
     )
 
-    with (legacy_dir / "summary.csv").open() as f:
-        legacy_cols = list(csv.DictReader(f).fieldnames or [])
+    with (plain_dir / "summary.csv").open() as f:
+        plain_cols = list(csv.DictReader(f).fieldnames or [])
     with (strat_dir / "summary.csv").open() as f:
         strat_cols = list(csv.DictReader(f).fieldnames or [])
 
-    assert legacy_cols == strat_cols
+    assert plain_cols == strat_cols
 
 
 def test_per_bin_baseline_ratios_populated(tmp_path: Path) -> None:

@@ -625,14 +625,21 @@ def _output_dir(output_dir: str | Path | None, model_name: str, checkpoint_path:
         1. Explicit `output_dir` always wins.
         2. If the checkpoint sits under any `runs/` ancestor (canonical layout),
            default to `<run_dir>/evaluation/` so artifacts stay self-contained.
-        3. Otherwise (legacy `checkpoints/<model>/<run_id>/`), fall back to
-           `results/evaluation/<model>/<run_id>/` for ad-hoc evaluation.
+
+    Checkpoints that match neither path raise rather than silently scattering
+    reports outside the canonical layout. The `model_name` argument is kept for
+    callers that resolve output dirs from training config (signature parity).
     """
+    del model_name  # reserved for future custom resolution
     if output_dir is not None:
         return Path(output_dir)
     if "runs" in checkpoint_path.parts:
         return checkpoint_path.parent / "evaluation"
-    return Path("results") / "evaluation" / model_name / checkpoint_path.parent.name
+    msg = (
+        f"cannot infer output directory for checkpoint at {checkpoint_path}: "
+        "checkpoint is not under a `runs/` ancestor and no --output-dir was given"
+    )
+    raise ValueError(msg)
 
 
 def _resolve_device(device_cfg: str) -> torch.device:

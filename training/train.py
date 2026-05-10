@@ -202,6 +202,7 @@ class Trainer:
         stages = self._stages()
         total_epochs = sum(n for _, n in stages)
         for stage_idx, (horizon, n_stage_epochs) in enumerate(stages):
+            target_stage_lr = self._stage_lr(stage_idx)
             if horizon != self.current_horizon:
                 self.train_loader, self.val_loader = self._setup_loaders_for_horizon(horizon)
                 self.current_horizon = horizon
@@ -209,8 +210,14 @@ class Trainer:
                 # reset is gated on horizon change so it fires alongside the loader rebuild;
                 # consecutive same-horizon stages keep optimizer state intact by design.
                 if cfg.training.reset_optimizer_on_stage:
-                    self.optimizer, self.scheduler = self._setup_optimizer()
+                    self.optimizer, self.scheduler = self._setup_optimizer(lr=target_stage_lr)
                     logger.info("optimizer reset at stage transition | horizon=%d", horizon)
+
+            # apply per-stage LR before the stage-start log line so it reflects the actual rate;
+            # idempotent when the optimizer was just rebuilt with target_stage_lr.
+            if cfg.training.curriculum_lrs is not None:
+                for pg in self.optimizer.param_groups:
+                    pg["lr"] = target_stage_lr
 
             self.current_clip_norm = self._stage_clip_norm(stage_idx)
 
@@ -424,6 +431,17 @@ class Trainer:
             return cfg.training.curriculum_gradient_clip_norms[stage_idx]
         return cfg.training.gradient_clip_norm
 
+    def _stage_lr(self, stage_idx: int) -> float:
+        """Return the optimizer LR for the given curriculum stage.
+
+        `curriculum_lrs` overrides the base `lr` per stage; if the list is None,
+        every stage falls back to `lr`. Mirrors `_stage_clip_norm`.
+        """
+        cfg = self.cfg
+        if cfg.training.curriculum_lrs is not None:
+            return cfg.training.curriculum_lrs[stage_idx]
+        return cfg.training.lr
+
     def _setup_model(self) -> nn.Module:
         """Build the model and optionally print a summary."""
         model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(self.device)
@@ -449,7 +467,7 @@ class Trainer:
         model state_dict is taken from the checkpoint.
 
         A checkpoint with a non-None `model_name` must match `cfg.model.name`.
-        Legacy checkpoints with `model_name=None` are accepted as-is.
+        Older checkpoints with `model_name=None` are accepted as-is.
         """
         path = Path(path)
         checkpoint = load_checkpoint(path, self.device)
@@ -472,12 +490,18 @@ class Trainer:
 
     def _setup_optimizer(
         self,
+        lr: float | None = None,
     ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None]:
-        """Create optimizer and optional LR scheduler."""
+        """Create optimizer and optional LR scheduler.
+
+        `lr` overrides the base `cfg.training.lr` when set; curriculum stage
+        resets pass the per-stage LR so the fresh optimizer starts at the
+        right rate.
+        """
         cfg = self.cfg
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=cfg.training.lr,
+            lr=lr if lr is not None else cfg.training.lr,
             weight_decay=cfg.training.weight_decay,
         )
 
@@ -662,7 +686,7 @@ class Trainer:
         inputs: torch.Tensor,
         targets: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """One forward pass; full-state MSE matching the legacy training path."""
+        """One forward pass; full-state MSE against the next-step target."""
         preds = self.model(inputs)
         loss = self.loss_fn(preds, targets)
         return preds, loss
@@ -909,9 +933,9 @@ def apply_artifact_dir(cfg: TrainConfig, artifact_dir: str | Path) -> TrainConfi
     """Override checkpointing.dir and logging.dir to a single artifact root.
 
     Force-enables both checkpointing and logging because the override only
-    makes sense when artifacts are actually written. Use this at the CLI
-    entry point or from orchestration scripts (scaling, sweep) to put every
-    run under the canonical `runs/<mode>/...` layout without editing YAMLs.
+    makes sense when artifacts are actually written. Use this from the CLI
+    to colocate checkpoints and logs under a single run root without
+    editing the YAML.
     """
     artifact_dir = str(artifact_dir)
     return replace(
@@ -933,7 +957,7 @@ if __name__ == "__main__":
         "--n-train",
         type=int,
         default=None,
-        help="Override n_train_trajectories from the config (data-scaling runs).",
+        help="Override n_train_trajectories from the config (training subset runs).",
     )
     parser.add_argument(
         "--init-checkpoint",

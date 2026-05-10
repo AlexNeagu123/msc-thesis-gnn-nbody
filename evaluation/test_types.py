@@ -1,12 +1,8 @@
 """Round-trip tests for evaluation/_types.py.
 
 Uses hand-written fixture dicts (not smoke-run outputs) to keep tests fast
-and decoupled from the model code. The on-disk metrics.json check is a
-soft guard: it loads if present, skips silently otherwise.
+and decoupled from the model code.
 """
-
-import json
-from pathlib import Path
 
 from evaluation._types import (
     EncounterBinDefinition,
@@ -23,7 +19,7 @@ def _egnn_report_dict() -> dict:
     return {
         "metadata": {
             "model_name": "egnn",
-            "checkpoint_path": "checkpoints/egnn/x/best.pt",
+            "checkpoint_path": "runs/egnn/x/best.pt",
             "config_path": "configs/egnn.yaml",
             "test_path": "data/output/test.h5",
             "device": "cpu",
@@ -177,13 +173,6 @@ def _hgnn_report_dict() -> dict:
     return base
 
 
-def _legacy_report_dict() -> dict:
-    """Old-shape fixture without rollout.curves (matches early metrics.json files)."""
-    base = _egnn_report_dict()
-    del base["rollout"]["curves"]
-    return base
-
-
 def test_evaluation_report_round_trip_egnn() -> None:
     """EGNN-shape report round-trips through from_dict/to_dict."""
     d = _egnn_report_dict()
@@ -194,14 +183,6 @@ def test_evaluation_report_round_trip_hgnn() -> None:
     """HGNN-shape report (with learned_hamiltonian) round-trips."""
     d = _hgnn_report_dict()
     assert EvaluationReport.from_dict(d).to_dict() == d
-
-
-def test_evaluation_report_legacy_no_curves_round_trip() -> None:
-    """Old metrics.json without rollout.curves round-trips with curves still absent."""
-    d = _legacy_report_dict()
-    out = EvaluationReport.from_dict(d).to_dict()
-    assert "curves" not in out["rollout"]
-    assert out == d
 
 
 def test_evaluation_report_typed_access() -> None:
@@ -263,18 +244,6 @@ def test_summary_row_includes_learned_h_for_hgnn() -> None:
     row = SummaryRow.from_report(report).to_csv_row()
     assert row["learned_h_final_drift_median"] == 0.05
     assert "learned_h_max_drift_max" in row
-
-
-def test_existing_metrics_json_round_trip() -> None:
-    """Every on-disk metrics.json must parse into the current typed schema."""
-    files = sorted(Path("results/evaluation").glob("**/metrics.json"))
-    if not files:
-        return
-    for path in files:
-        with path.open() as f:
-            original = json.load(f)
-        out = EvaluationReport.from_dict(original).to_dict()
-        assert EvaluationReport.from_dict(out).to_dict() == out, f"schema parse failed for {path}"
 
 
 _EXPECTED_STATIC_COLUMNS = (
@@ -442,8 +411,8 @@ def _stratified_report_dict() -> dict:
     return base
 
 
-def test_legacy_report_has_no_encounter_bins_field() -> None:
-    """Legacy metrics.json (no encounter_bins key) parses with field=None."""
+def test_report_without_encounter_bins_field_parses() -> None:
+    """A non-stratified report (no encounter_bins key) parses with field=None."""
     report = EvaluationReport.from_dict(_egnn_report_dict())
     assert report.encounter_bins is None
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -55,6 +56,7 @@ class TrainingParams:
     curriculum_epochs: list[int] | None = None
     gradient_clip_norm: float = 10.0
     curriculum_gradient_clip_norms: list[float] | None = None
+    curriculum_lrs: list[float] | None = None
     skip_nonfinite_batches: bool = True
     reset_optimizer_on_stage: bool = False
 
@@ -67,6 +69,7 @@ class TrainingParams:
         horizons = self.curriculum_horizons
         epochs_list = self.curriculum_epochs
         clip_norms = self.curriculum_gradient_clip_norms
+        lrs = self.curriculum_lrs
 
         if (horizons is None) != (epochs_list is None):
             msg = "curriculum_horizons and curriculum_epochs must both be set or both be None"
@@ -80,6 +83,12 @@ class TrainingParams:
                 msg = (
                     "curriculum_gradient_clip_norms is only valid with a curriculum schedule; "
                     "use gradient_clip_norm in single-horizon mode"
+                )
+                raise ValueError(msg)
+            if lrs is not None:
+                msg = (
+                    "curriculum_lrs is only valid with a curriculum schedule; "
+                    "use lr in single-horizon mode"
                 )
                 raise ValueError(msg)
             return
@@ -108,8 +117,22 @@ class TrainingParams:
                     f"curriculum_horizons ({len(horizons)}) must have the same length"
                 )
                 raise ValueError(msg)
-            if any(n <= 0 for n in clip_norms):
-                msg = f"every curriculum_gradient_clip_norms entry must be > 0, got {clip_norms}"
+            if any(not math.isfinite(n) or n <= 0 for n in clip_norms):
+                msg = (
+                    "every curriculum_gradient_clip_norms entry must be a finite float > 0, "
+                    f"got {clip_norms}"
+                )
+                raise ValueError(msg)
+
+        if lrs is not None:
+            if len(lrs) != len(horizons):
+                msg = (
+                    f"curriculum_lrs ({len(lrs)}) and "
+                    f"curriculum_horizons ({len(horizons)}) must have the same length"
+                )
+                raise ValueError(msg)
+            if any(not math.isfinite(v) or v <= 0 for v in lrs):
+                msg = f"every curriculum_lrs entry must be a finite float > 0, got {lrs}"
                 raise ValueError(msg)
 
 

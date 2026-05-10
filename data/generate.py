@@ -53,14 +53,14 @@ class Generator:
             self._generate_split(split)
 
     def _generate_split(self, split: SplitConfig) -> None:
-        """Dispatch to uniform (legacy) or stratified generation."""
+        """Dispatch to uniform or stratified generation."""
         if self.cfg.stratified is None:
             self._generate_uniform_split(split)
         else:
             self._generate_stratified_split(split)
 
     def _generate_uniform_split(self, split: SplitConfig) -> None:
-        """Generate one dataset split with the legacy first-N-accepted policy."""
+        """Generate one dataset split with the uniform first-N-accepted policy."""
         rng = np.random.default_rng(split.seed)
         n_steps = int(self.params.t_end / self.params.dt)
         n_trajectories = split.n_trajectories

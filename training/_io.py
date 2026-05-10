@@ -28,9 +28,9 @@ def save_checkpoint(path: Path, checkpoint: Checkpoint) -> None:
 
 
 def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
-    """Load a checkpoint, normalizing legacy dict checkpoints into Checkpoint.
+    """Load a checkpoint, normalising dict-shaped payloads into Checkpoint.
 
-    Validates that legacy dict checkpoints carry dict-shaped `model` and
+    Validates that dict-shaped payloads carry dict-shaped `model` and
     `optimizer` state at the I/O boundary, so contract violations surface
     here instead of later inside `nn.Module.load_state_dict`.
     """

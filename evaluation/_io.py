@@ -1,7 +1,7 @@
 """Serialization for evaluation reports.
 
-Owns the metrics.json / summary.csv I/O boundary so producers (evaluate.py)
-and consumers (scaling_report.py, notebooks) never touch raw json/csv calls.
+Owns the metrics.json / summary.csv I/O boundary so producers and
+notebook consumers never touch raw json/csv calls.
 
 References:
     - Report schema: evaluation/_types.py

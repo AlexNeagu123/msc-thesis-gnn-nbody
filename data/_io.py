@@ -50,8 +50,8 @@ def read_trajectories(path: Path) -> Trajectories:
 
     Stratification fields are atomic: a file with all four pieces produces
     a Trajectories with all four populated; a file with none produces a
-    Trajectories with all four None (legacy / uniform); a partial file
-    raises ValueError listing which pieces are missing.
+    Trajectories with all four None (uniform / non-stratified); a partial
+    file raises ValueError listing which pieces are missing.
     """
     with h5py.File(path, "r") as f:
         states = f[_TRAJECTORIES_KEY][:]
@@ -125,7 +125,7 @@ def _validate_stratification(t: Trajectories) -> None:
 
     The contract is intentionally strict: a partial set of stratification
     fields is treated as a producer bug rather than silently downgraded
-    to legacy. `n_trajectories` is taken from `states.shape[0]`.
+    to non-stratified. `n_trajectories` is taken from `states.shape[0]`.
     """
     parts = {
         "encounter_bin_id": t.encounter_bin_id,
@@ -136,7 +136,7 @@ def _validate_stratification(t: Trajectories) -> None:
     set_parts = [name for name, value in parts.items() if value is not None]
 
     if not set_parts:
-        return  # legacy / uniform: nothing to write
+        return  # non-stratified / uniform: nothing to write
     if len(set_parts) != len(parts):
         missing = [name for name, value in parts.items() if value is None]
         msg = f"stratification fields are atomic; got {set_parts} but missing {missing}"

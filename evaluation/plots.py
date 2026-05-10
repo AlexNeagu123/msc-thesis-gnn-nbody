@@ -232,14 +232,17 @@ def plot_rollout_mse(
 
     n_steps = test_traj.shape[1] - 1
     mse = compute_rollout_mse(test_traj, predicted)
+    state = mse.state
     steps = np.arange(n_steps + 1)
 
     _fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax = axes[0]
-    ax.plot(steps, mse.mean, label="mean finite MSE", color="tab:red", linewidth=1.0)
-    ax.plot(steps, mse.median, label="median finite MSE", color="tab:blue", linewidth=1.0)
-    ax.fill_between(steps, mse.mean - mse.std, mse.mean + mse.std, color="tab:red", alpha=0.2)
+    ax.plot(steps, state.mean, label="mean finite MSE", color="tab:red", linewidth=1.0)
+    ax.plot(steps, state.median, label="median finite MSE", color="tab:blue", linewidth=1.0)
+    ax.fill_between(
+        steps, state.mean - state.std, state.mean + state.std, color="tab:red", alpha=0.2
+    )
     ax.set_xlabel("step")
     ax.set_ylabel("MSE")
     ax.set_title("rollout MSE vs time step (linear)")
@@ -247,18 +250,18 @@ def plot_rollout_mse(
     ax.grid(True, alpha=0.3)
 
     ax = axes[1]
-    ax.plot(steps[1:], mse.mean[1:], label="mean finite MSE", color="tab:red", linewidth=1.0)
+    ax.plot(steps[1:], state.mean[1:], label="mean finite MSE", color="tab:red", linewidth=1.0)
     ax.plot(
         steps[1:],
-        mse.median[1:],
+        state.median[1:],
         label="median finite MSE",
         color="tab:blue",
         linewidth=1.0,
     )
     ax.fill_between(
         steps[1:],
-        np.maximum(mse.mean[1:] - mse.std[1:], 1e-10),
-        mse.mean[1:] + mse.std[1:],
+        np.maximum(state.mean[1:] - state.std[1:], 1e-10),
+        state.mean[1:] + state.std[1:],
         color="tab:red",
         alpha=0.2,
     )
@@ -274,8 +277,8 @@ def plot_rollout_mse(
 
     summary_steps = [1, 50, 100, n_steps]
     for step in dict.fromkeys(s for s in summary_steps if 0 < s <= n_steps):
-        print(f"step {step:3d} MSE: {mse.mean[step]:.6f}")
-    print(f"finite rollouts at final step: {mse.finite_fraction[-1] * 100:.1f}%")
+        print(f"step {step:3d} MSE: {state.mean[step]:.6f}")
+    print(f"finite rollouts at final step: {state.finite_fraction[-1] * 100:.1f}%")
 
 
 def plot_pos_vel_error(

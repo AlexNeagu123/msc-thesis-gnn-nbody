@@ -24,9 +24,8 @@ class NBodyDataset(Dataset):
 
         Args:
             path: HDF5 file path.
-            n_trajectories: if set, use only the first N trajectories. Used by
-                data-scaling experiments to slice nested subsets from a larger
-                generated file.
+            n_trajectories: if set, use only the first N trajectories. Used
+                to slice a prefix subset from a larger generated file.
         """
         trajectories = read_states(Path(path))
 
@@ -82,8 +81,8 @@ class TrajectoryWindowDataset(Dataset):
             path: HDF5 file path.
             horizon: number of consecutive future states per window. Must
                 satisfy `1 <= horizon < n_frames`.
-            n_trajectories: if set, use only the first N trajectories. Used
-                by data-scaling experiments, identical to NBodyDataset.
+            n_trajectories: if set, use only the first N trajectories.
+                Prefix subset semantics identical to NBodyDataset.
         """
         if horizon < 1:
             msg = f"horizon must be >= 1, got {horizon}"

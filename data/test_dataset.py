@@ -37,7 +37,7 @@ def test_dataset_length(sample_h5: tuple[str, np.ndarray]) -> None:
 
 
 def test_dataset_can_use_trajectory_prefix(sample_h5: tuple[str, np.ndarray]) -> None:
-    """Data-scaling runs can use a deterministic prefix of the train file."""
+    """Training subset runs can use a deterministic prefix of the train file."""
     path, trajectories = sample_h5
     ds = NBodyDataset(path, n_trajectories=2)
 
@@ -52,7 +52,7 @@ def test_dataset_can_use_trajectory_prefix(sample_h5: tuple[str, np.ndarray]) ->
 def test_dataset_rejects_too_many_requested_trajectories(
     sample_h5: tuple[str, np.ndarray],
 ) -> None:
-    """Scaling labels should not silently exceed the available HDF5 data."""
+    """Prefix subset size should not silently exceed the available HDF5 data."""
     path, trajectories = sample_h5
 
     with pytest.raises(ValueError, match=r"requested .* but only"):
@@ -62,7 +62,7 @@ def test_dataset_rejects_too_many_requested_trajectories(
 def test_dataset_rejects_non_positive_trajectory_count(
     sample_h5: tuple[str, np.ndarray],
 ) -> None:
-    """A zero-sized scaling dataset is invalid."""
+    """A zero-sized prefix subset is invalid."""
     path, _ = sample_h5
 
     with pytest.raises(ValueError, match="must be positive"):
@@ -194,7 +194,7 @@ def test_window_does_not_cross_trajectory(sample_h5: tuple[str, np.ndarray]) -> 
 
 
 def test_window_n_trajectories_slicing(sample_h5: tuple[str, np.ndarray]) -> None:
-    """Data-scaling slicing yields a deterministic prefix of trajectories."""
+    """Prefix-subset slicing yields a deterministic prefix of trajectories."""
     path, trajectories = sample_h5
     horizon = 3
     ds = TrajectoryWindowDataset(path, horizon=horizon, n_trajectories=2)

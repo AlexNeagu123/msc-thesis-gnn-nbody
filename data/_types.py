@@ -37,8 +37,8 @@ class SplitConfig:
 class DataGenConfig:
     """Top-level data generation configuration.
 
-    `stratified` is None for legacy uniform generation; when present, it
-    has been fully validated by `StratifiedConfig.__post_init__`.
+    `stratified` is None for uniform generation; when present, it has
+    been fully validated by `StratifiedConfig.__post_init__`.
     """
 
     simulation: SimulationParams
@@ -261,14 +261,14 @@ class StratifiedConfig:
 class Trajectories:
     """Typed bundle for the contents of one trajectory HDF5 file.
 
-    `metadata` is optional because test fixtures and legacy files may
+    `metadata` is optional because test fixtures and older files may
     omit the metadata group; production files always include it.
 
     The four `encounter_*` / `min_pairwise_distance` / `encounter_bins`
     fields form an atomic stratification group: either all four are
-    populated (a stratified dataset) or all four are None (legacy or
-    uniform). The persistence boundary in `data/_io.py` enforces this
-    contract; in-memory construction does not.
+    populated (a stratified dataset) or all four are None (uniform /
+    non-stratified). The persistence boundary in `data/_io.py` enforces
+    this contract; in-memory construction does not.
     """
 
     states: np.ndarray  # (n_trajectories, n_steps, n_particles, 5)

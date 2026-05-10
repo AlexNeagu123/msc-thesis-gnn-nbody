@@ -66,24 +66,24 @@ def test_save_and_load_checkpoint_round_trip(tmp_path: Path) -> None:
     assert torch.equal(loaded.model["weight"], ckpt.model["weight"])
 
 
-def test_load_checkpoint_normalizes_legacy_dict(tmp_path: Path) -> None:
-    """A legacy dict-shaped checkpoint is converted to a typed Checkpoint."""
-    legacy = {
+def test_load_checkpoint_normalizes_dict_shaped(tmp_path: Path) -> None:
+    """A dict-shaped checkpoint on disk is normalised into a typed Checkpoint on read."""
+    raw = {
         "epoch": 7,
         "model": {"weight": torch.tensor([0.5])},
         "optimizer": {},
         "val_loss": 0.42,
-        "run_id": "legacy",
+        "run_id": "dict_shaped",
     }
-    path = tmp_path / "legacy.pt"
-    torch.save(legacy, path)
+    path = tmp_path / "dict_shaped.pt"
+    torch.save(raw, path)
 
     loaded = load_checkpoint(path, torch.device("cpu"))
 
     assert isinstance(loaded, Checkpoint)
     assert loaded.epoch == 7
     assert loaded.val_loss == 0.42
-    assert loaded.run_id == "legacy"
+    assert loaded.run_id == "dict_shaped"
     # missing fields are filled with dataclass defaults
     assert loaded.pos_std is None
     assert loaded.git_commit is None
@@ -99,7 +99,7 @@ def test_load_checkpoint_rejects_bad_type(tmp_path: Path) -> None:
 
 
 def test_load_checkpoint_rejects_dict_missing_model(tmp_path: Path) -> None:
-    """Legacy dict missing a dict-shaped 'model' state fails at I/O boundary."""
+    """A dict-shaped checkpoint missing the 'model' state fails at I/O boundary."""
     path = tmp_path / "missing_model.pt"
     torch.save({"epoch": 1, "optimizer": {}, "val_loss": 0.1}, path)
 
@@ -108,7 +108,7 @@ def test_load_checkpoint_rejects_dict_missing_model(tmp_path: Path) -> None:
 
 
 def test_load_checkpoint_rejects_dict_missing_optimizer(tmp_path: Path) -> None:
-    """Legacy dict missing a dict-shaped 'optimizer' state fails at I/O boundary."""
+    """A dict-shaped checkpoint missing the 'optimizer' state fails at I/O boundary."""
     path = tmp_path / "missing_opt.pt"
     torch.save({"epoch": 1, "model": {"w": torch.tensor([1.0])}, "val_loss": 0.1}, path)
 

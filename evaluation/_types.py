@@ -48,31 +48,6 @@ class RolloutMSE:
     position: RolloutMetricSeries
     velocity: RolloutMetricSeries
 
-    @property
-    def per_trajectory(self) -> npt.NDArray[np.floating]:
-        """Backward-compatible access to full dynamic-state MSE."""
-        return self.state.per_trajectory
-
-    @property
-    def mean(self) -> npt.NDArray[np.floating]:
-        """Backward-compatible access to full dynamic-state mean MSE."""
-        return self.state.mean
-
-    @property
-    def median(self) -> npt.NDArray[np.floating]:
-        """Backward-compatible access to full dynamic-state median MSE."""
-        return self.state.median
-
-    @property
-    def std(self) -> npt.NDArray[np.floating]:
-        """Backward-compatible access to full dynamic-state std MSE."""
-        return self.state.std
-
-    @property
-    def finite_fraction(self) -> npt.NDArray[np.floating]:
-        """Backward-compatible access to full dynamic-state finite fraction."""
-        return self.state.finite_fraction
-
 
 @dataclass
 class MseSummary:
@@ -185,11 +160,6 @@ class SingleStepReport:
     velocity_mse: MseSummary
     min_pairwise_distance: DistanceSummary
 
-    @property
-    def mse(self) -> MseSummary:
-        """Backward-compatible alias for full dynamic-state MSE."""
-        return self.state_mse
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report key order."""
         return {
@@ -226,26 +196,6 @@ class RolloutStepMetrics:
     state_mse: RolloutMetricSummary
     position_mse: RolloutMetricSummary
     velocity_mse: RolloutMetricSummary
-
-    @property
-    def mean_finite_mse(self) -> float | None:
-        """Backward-compatible alias for full dynamic-state mean MSE."""
-        return self.state_mse.mean_finite
-
-    @property
-    def median_mse(self) -> float | None:
-        """Backward-compatible alias for full dynamic-state median MSE."""
-        return self.state_mse.median
-
-    @property
-    def p95_mse(self) -> float | None:
-        """Backward-compatible alias for full dynamic-state p95 MSE."""
-        return self.state_mse.p95
-
-    @property
-    def finite_fraction(self) -> float | None:
-        """Backward-compatible alias for full dynamic-state finite fraction."""
-        return self.state_mse.finite_fraction
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _rollout_steps key order."""
@@ -284,26 +234,6 @@ class RolloutCurves:
     position_mse: RolloutMetricCurves
     velocity_mse: RolloutMetricCurves
 
-    @property
-    def mean_finite_mse(self) -> list[float | None]:
-        """Backward-compatible alias for full dynamic-state mean MSE."""
-        return self.state_mse.mean_finite
-
-    @property
-    def median_mse(self) -> list[float | None]:
-        """Backward-compatible alias for full dynamic-state median MSE."""
-        return self.state_mse.median
-
-    @property
-    def p95_mse(self) -> list[float | None]:
-        """Backward-compatible alias for full dynamic-state p95 MSE."""
-        return self.state_mse.p95
-
-    @property
-    def finite_fraction(self) -> list[float | None]:
-        """Backward-compatible alias for full dynamic-state finite fraction."""
-        return self.state_mse.finite_fraction
-
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _rollout_curves key order."""
         return {
@@ -331,45 +261,27 @@ class DivergenceMetrics:
 
 @dataclass
 class RolloutReport:
-    """Long-horizon rollout block.
-
-    `curves` is optional because metrics.json files predating that field
-    omit it; from_dict() loads them as curves=None, to_dict() skips the
-    key entirely on output.
-    """
+    """Long-horizon rollout block."""
 
     steps: dict[str, RolloutStepMetrics]
     first_nonfinite_step: list[int | None]
     state_mse_thresholds: dict[str, DivergenceMetrics]
     position_mse_thresholds: dict[str, DivergenceMetrics]
     state_final_finite_fraction: float | None
-    curves: RolloutCurves | None = None
-
-    @property
-    def thresholds(self) -> dict[str, DivergenceMetrics]:
-        """Backward-compatible alias for full dynamic-state MSE thresholds."""
-        return self.state_mse_thresholds
-
-    @property
-    def finite_final_fraction(self) -> float | None:
-        """Backward-compatible alias for full dynamic-state finite fraction."""
-        return self.state_final_finite_fraction
+    curves: RolloutCurves
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _build_report rollout key order."""
-        # order: steps, curves (optional), first_nonfinite_step, thresholds, final fraction
-        out: dict[str, Any] = {
+        return {
             "steps": {k: v.to_dict() for k, v in self.steps.items()},
+            "curves": self.curves.to_dict(),
+            "first_nonfinite_step": self.first_nonfinite_step,
+            "state_mse_thresholds": {k: v.to_dict() for k, v in self.state_mse_thresholds.items()},
+            "position_mse_thresholds": {
+                k: v.to_dict() for k, v in self.position_mse_thresholds.items()
+            },
+            "state_final_finite_fraction": self.state_final_finite_fraction,
         }
-        if self.curves is not None:
-            out["curves"] = self.curves.to_dict()
-        out["first_nonfinite_step"] = self.first_nonfinite_step
-        out["state_mse_thresholds"] = {k: v.to_dict() for k, v in self.state_mse_thresholds.items()}
-        out["position_mse_thresholds"] = {
-            k: v.to_dict() for k, v in self.position_mse_thresholds.items()
-        }
-        out["state_final_finite_fraction"] = self.state_final_finite_fraction
-        return out
 
 
 @dataclass
@@ -581,73 +493,51 @@ def _energy_drift_from_dict(d: dict[str, Any]) -> EnergyDriftReport:
 
 
 def _single_step_from_dict(d: dict[str, Any]) -> SingleStepReport:
-    """Construct SingleStepReport, accepting legacy `mse` reports."""
-    state_raw = d.get("state_mse", d.get("mse"))
-    if state_raw is None:
-        msg = "single_step report must contain state_mse or legacy mse"
-        raise KeyError(msg)
-
+    """Construct SingleStepReport from a JSON-shaped dict."""
     return SingleStepReport(
-        state_mse=MseSummary(**state_raw),
-        position_mse=MseSummary(**d.get("position_mse", state_raw)),
-        velocity_mse=MseSummary(**d.get("velocity_mse", state_raw)),
+        state_mse=MseSummary(**d["state_mse"]),
+        position_mse=MseSummary(**d["position_mse"]),
+        velocity_mse=MseSummary(**d["velocity_mse"]),
         min_pairwise_distance=DistanceSummary(**d["min_pairwise_distance"]),
     )
 
 
 def _rollout_metric_summary_from_dict(d: dict[str, Any]) -> RolloutMetricSummary:
-    """Construct RolloutMetricSummary from new or legacy key names."""
+    """Construct RolloutMetricSummary from a JSON-shaped dict."""
     return RolloutMetricSummary(
-        mean_finite=d.get("mean_finite", d.get("mean_finite_mse")),
-        median=d.get("median", d.get("median_mse")),
-        p95=d.get("p95", d.get("p95_mse")),
+        mean_finite=d["mean_finite"],
+        median=d["median"],
+        p95=d["p95"],
         finite_fraction=d["finite_fraction"],
     )
 
 
 def _rollout_step_from_dict(d: dict[str, Any]) -> RolloutStepMetrics:
-    """Construct RolloutStepMetrics, accepting legacy flat step metrics."""
-    if "state_mse" in d:
-        return RolloutStepMetrics(
-            state_mse=_rollout_metric_summary_from_dict(d["state_mse"]),
-            position_mse=_rollout_metric_summary_from_dict(d["position_mse"]),
-            velocity_mse=_rollout_metric_summary_from_dict(d["velocity_mse"]),
-        )
-
-    legacy = _rollout_metric_summary_from_dict(d)
+    """Construct RolloutStepMetrics from a JSON-shaped dict."""
     return RolloutStepMetrics(
-        state_mse=legacy,
-        position_mse=legacy,
-        velocity_mse=legacy,
+        state_mse=_rollout_metric_summary_from_dict(d["state_mse"]),
+        position_mse=_rollout_metric_summary_from_dict(d["position_mse"]),
+        velocity_mse=_rollout_metric_summary_from_dict(d["velocity_mse"]),
     )
 
 
 def _rollout_metric_curves_from_dict(d: dict[str, Any]) -> RolloutMetricCurves:
-    """Construct RolloutMetricCurves from new or legacy key names."""
+    """Construct RolloutMetricCurves from a JSON-shaped dict."""
     return RolloutMetricCurves(
-        mean_finite=d.get("mean_finite", d.get("mean_finite_mse")),
-        median=d.get("median", d.get("median_mse")),
-        p95=d.get("p95", d.get("p95_mse")),
+        mean_finite=d["mean_finite"],
+        median=d["median"],
+        p95=d["p95"],
         finite_fraction=d["finite_fraction"],
     )
 
 
 def _rollout_curves_from_dict(d: dict[str, Any]) -> RolloutCurves:
-    """Construct RolloutCurves, accepting legacy flat curve metrics."""
-    if "state_mse" in d:
-        return RolloutCurves(
-            step=d["step"],
-            state_mse=_rollout_metric_curves_from_dict(d["state_mse"]),
-            position_mse=_rollout_metric_curves_from_dict(d["position_mse"]),
-            velocity_mse=_rollout_metric_curves_from_dict(d["velocity_mse"]),
-        )
-
-    legacy = _rollout_metric_curves_from_dict(d)
+    """Construct RolloutCurves from a JSON-shaped dict."""
     return RolloutCurves(
         step=d["step"],
-        state_mse=legacy,
-        position_mse=legacy,
-        velocity_mse=legacy,
+        state_mse=_rollout_metric_curves_from_dict(d["state_mse"]),
+        position_mse=_rollout_metric_curves_from_dict(d["position_mse"]),
+        velocity_mse=_rollout_metric_curves_from_dict(d["velocity_mse"]),
     )
 
 
@@ -657,21 +547,14 @@ def _divergence_from_dict(d: dict[str, Any]) -> dict[str, DivergenceMetrics]:
 
 
 def _rollout_report_from_dict(d: dict[str, Any]) -> RolloutReport:
-    """Construct RolloutReport, accepting legacy threshold and finite-fraction names."""
-    curves = d.get("curves")
-    state_thresholds = d.get("state_mse_thresholds", d.get("thresholds", {}))
-    position_thresholds = d.get("position_mse_thresholds", state_thresholds)
-    state_final_finite_fraction = d.get(
-        "state_final_finite_fraction",
-        d.get("finite_final_fraction"),
-    )
+    """Construct RolloutReport from a JSON-shaped dict."""
     return RolloutReport(
         steps={k: _rollout_step_from_dict(v) for k, v in d["steps"].items()},
         first_nonfinite_step=d["first_nonfinite_step"],
-        state_mse_thresholds=_divergence_from_dict(state_thresholds),
-        position_mse_thresholds=_divergence_from_dict(position_thresholds),
-        state_final_finite_fraction=state_final_finite_fraction,
-        curves=_rollout_curves_from_dict(curves) if curves is not None else None,
+        state_mse_thresholds=_divergence_from_dict(d["state_mse_thresholds"]),
+        position_mse_thresholds=_divergence_from_dict(d["position_mse_thresholds"]),
+        state_final_finite_fraction=d["state_final_finite_fraction"],
+        curves=_rollout_curves_from_dict(d["curves"]),
     )
 
 
@@ -689,7 +572,7 @@ class EvaluationReport:
     """Top-level evaluation report.
 
     `encounter_bins` is optional: stratified test files produce a populated
-    block, legacy/uniform files leave it None. Serialization omits the key
+    block, non-stratified files leave it None. Serialization omits the key
     entirely when None (matches the EnergyReport.learned_hamiltonian pattern).
     """
 
