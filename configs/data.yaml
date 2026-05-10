@@ -1,11 +1,11 @@
-train_path: data/output/scaling/train.h5
-val_path: data/output/scaling/val.h5
-test_path: data/output/scaling/test.h5
+train_path: data/output/train.h5
+val_path: data/output/val.h5
+test_path: data/output/test.h5
 
 n_particles: 3
-n_train: 10000
-n_val: 100
-n_test: 100
+n_train: 1000
+n_val: 600
+n_test: 600
 t_end: 10.0
 dt: 0.05
 G: 1.0
@@ -15,3 +15,30 @@ max_position: 5.0
 pos_scale: 1.0
 vel_scale: 0.5
 seed: 42
+
+stratified:
+  enabled: true
+  bins:
+    - {name: close, lo: 0.00, hi: 0.02}
+    - {name: near,  lo: 0.02, hi: 0.05}
+    - {name: mid,   lo: 0.05, hi: 0.15}
+    - {name: wide,  lo: 0.15, hi: 0.50}
+    - {name: far,   lo: 0.50, hi: .inf}
+  train_distribution:
+    close: 1
+    near:  1
+    mid:   1
+    wide:  1
+    far:   1
+  val_distribution:
+    close: 1
+    near:  1
+    mid:   1
+    wide:  1
+    far:   1
+  test_distribution:
+    close: 1
+    near:  1
+    mid:   1
+    wide:  1
+    far:   1

@@ -5,7 +5,7 @@ prints Tables 1-4 from `edu/data-scaling-methodology.md` as markdown.
 
 Usage::
 
-    python -m evaluation.scaling_report --manifest configs/scaling_runs.yaml
+    python -m evaluation.scaling_report --manifest path/to/scaling_runs.yaml
 
 Manifest format::
 

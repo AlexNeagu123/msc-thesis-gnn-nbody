@@ -53,17 +53,15 @@ Modes that currently land under `runs/`:
 
 | Mode | Layout |
 | --- | --- |
-| `single` | `runs/single/<model>/n<N_TRAIN>/<run_id>/` |
-| `curriculum` | `runs/curriculum/<model>/n<N_TRAIN>/<run_id>/` |
-| `scaling` | `runs/scaling/<model>/n<N_TRAIN>/<run_id>/` (one dir per N) |
-| `sweep` (2-D LR x noise grid) | `runs/sweep/<model>/lr_<lr>_nf_<nf>/<run_id>/` |
-| `noise_sweep` (Colab single-axis) | `runs/noise_sweep/egnn/n<N_TRAIN>_e<EPOCHS>/nf_<nf>/<run_id>/` |
+| official model runs | `runs/<model>/<run_id>/` |
+| optional scaling | `runs/scaling/<model>/n<N_TRAIN>/<run_id>/` |
+| optional sweep | `runs/sweep/<model>/lr_<lr>_nf_<nf>/<run_id>/` |
+| optional baselines | `runs/baselines/<baseline>/evaluation/` |
 
-`checkpoints/` and `logs/` are legacy default roots from earlier
-experiments. They are kept readable but not used for new thesis-quality
-runs. `results/evaluation/` is a fallback the evaluator falls through to
-only when a checkpoint is not under `runs/...` (i.e. ad-hoc eval of a
-legacy artifact). All artifact roots are ignored by git.
+The active EGNN/HGNN YAML files write checkpoints and logs directly under
+`runs/egnn/` and `runs/hgnn/`. `results/evaluation/` is a fallback the
+evaluator falls through to only when a checkpoint is not under `runs/...`.
+All artifact roots are ignored by git.
 
 ## Dependency Direction
 

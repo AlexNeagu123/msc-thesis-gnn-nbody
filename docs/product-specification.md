@@ -125,14 +125,12 @@ archive so checkpoints, metrics, and evaluation stay colocated:
 
 ```bash
 uv run python -m training.train \
-  --config configs/egnn_curriculum.yaml \
-  --n-train 5000 \
-  --artifact-dir runs/curriculum/egnn/n5000
+  --config configs/egnn.yaml \
+  --n-train 1000 \
+  --artifact-dir runs/egnn
 ```
 
-The two training-only forms below still work and are useful for ad-hoc
-local experiments. Without `--artifact-dir`, paths come from the YAML
-(typically the legacy `checkpoints/` / `logs/` roots):
+The two training-only forms below use the same canonical roots from the YAML:
 
 ```bash
 uv run python -m training.train --config configs/egnn.yaml
@@ -148,12 +146,12 @@ Arguments:
 | `--artifact-dir` | No | YAML values | Single directory under which both checkpoints and metrics are written, force-enabling both. The trainer appends `<run_id>` as a per-run subdirectory. |
 | `--init-checkpoint` | No | None | Initialise model weights from a previous checkpoint; optimizer, scheduler, and run_id all start fresh. |
 
-Outputs (canonical layout, with `--artifact-dir runs/curriculum/egnn/n5000`):
+Outputs (canonical layout, with `--artifact-dir runs/egnn`):
 
-- `runs/curriculum/egnn/n5000/<run_id>/best.pt`
-- `runs/curriculum/egnn/n5000/<run_id>/latest.pt`
-- `runs/curriculum/egnn/n5000/<run_id>/metrics.csv`
-- `runs/curriculum/egnn/n5000/<run_id>/diagnostics.log`
+- `runs/egnn/<run_id>/best.pt`
+- `runs/egnn/<run_id>/latest.pt`
+- `runs/egnn/<run_id>/metrics.csv`
+- `runs/egnn/<run_id>/diagnostics.log`
 
 ### Run a Data-Scaling Sweep
 
@@ -209,16 +207,16 @@ report next to the checkpoint, so artifacts stay self-contained. Pass
 
 ```bash
 uv run python -m evaluation.evaluate \
-  --config configs/egnn_curriculum.yaml \
-  --checkpoint runs/curriculum/egnn/n5000/<run_id>/best.pt \
-  --test-path data/output/scaling/test.h5 \
+  --config configs/egnn.yaml \
+  --checkpoint runs/egnn/<run_id>/best.pt \
+  --test-path data/output/test.h5 \
   --device auto
 ```
 
 This writes:
 
-- `runs/curriculum/egnn/n5000/<run_id>/evaluation/metrics.json`
-- `runs/curriculum/egnn/n5000/<run_id>/evaluation/summary.csv`
+- `runs/egnn/<run_id>/evaluation/metrics.json`
+- `runs/egnn/<run_id>/evaluation/summary.csv`
 
 Arguments:
 
@@ -247,7 +245,7 @@ Outputs:
 
 ```bash
 uv run python -m evaluation.scaling_report \
-  --manifest runs/scaling_runs.yaml \
+  --manifest path/to/scaling_runs.yaml \
   --output runs/scaling_report.md
 ```
 
@@ -339,8 +337,7 @@ MyDrive/masters-thesis/data/scaling/test.h5
 Drive output:
 
 ```text
-MyDrive/masters-thesis/runs/<model>/n<N_TRAIN>/<run_id>/
-MyDrive/masters-thesis/runs/noise_sweep/egnn/n<N_TRAIN>_e<EPOCHS>/nf_<noise>/<run_id>/
+MyDrive/masters-thesis/runs/<model>/<run_id>/
 ```
 
 The notebook validates that `train.h5` contains enough trajectories before training. This prevents a long run from silently using the wrong dataset.
