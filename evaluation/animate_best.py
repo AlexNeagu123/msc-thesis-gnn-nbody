@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import torch
+import yaml
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter, writers
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
@@ -135,6 +136,63 @@ def select_best_trajectories(
     return selections
 
 
+def select_trajectories_from_file(
+    test_bundle: Trajectories,
+    egnn_predicted: npt.NDArray[np.floating],
+    hgnn_predicted: npt.NDArray[np.floating],
+    selection_path: Path,
+) -> list[BestTrajectory]:
+    """Load a YAML mapping `{bin_name: traj_index}` and return matching BestTrajectory entries.
+
+    The file is intentionally small and hand-edited from the visualisation
+    notebook. Validation is strict: every bin in the test set must appear
+    exactly once; no unknown bin names; every index must be in range and
+    actually live in its declared bin; both EGNN and HGNN must produce a
+    finite mean rollout MSE on that index. Returned selections are in
+    canonical encounter-bin order so downstream code can iterate them the
+    same way as the automatic selector's output.
+
+    File format (yaml.safe_load):
+        close: 368
+        near: 214
+        mid: 26
+        wide: 502
+        far: 467
+    """
+    _require_stratified_bundle(test_bundle)
+    _require_matching_shapes(test_bundle.states, egnn_predicted, hgnn_predicted)
+    assert test_bundle.encounter_bins is not None
+    assert test_bundle.encounter_bin_id is not None
+    assert test_bundle.min_pairwise_distance is not None
+
+    raw = _load_selection_yaml(selection_path)
+    bins = test_bundle.encounter_bins
+    bin_names = [b.name for b in bins]
+    _require_complete_bin_coverage(raw, bin_names, selection_path)
+
+    egnn_mse = _per_trajectory_mean_state_mse(test_bundle.states, egnn_predicted)
+    hgnn_mse = _per_trajectory_mean_state_mse(test_bundle.states, hgnn_predicted)
+    n_traj = test_bundle.states.shape[0]
+
+    selections: list[BestTrajectory] = []
+    for bin_id, bin_def in enumerate(bins):
+        idx = int(raw[bin_def.name])
+        _require_index_in_range(idx, bin_def.name, n_traj)
+        _require_index_in_bin(idx, bin_def.name, bin_id, test_bundle.encounter_bin_id)
+        _require_finite_predictions(idx, bin_def.name, egnn_mse, hgnn_mse)
+        selections.append(
+            BestTrajectory(
+                bin_id=bin_id,
+                bin_name=bin_def.name,
+                traj_index=idx,
+                d_min=float(test_bundle.min_pairwise_distance[idx]),
+                egnn_mean_state_mse=float(egnn_mse[idx]),
+                hgnn_mean_state_mse=float(hgnn_mse[idx]),
+            )
+        )
+    return selections
+
+
 def render_three_panel_animation(
     true_traj: npt.NDArray[np.floating],
     egnn_pred: npt.NDArray[np.floating],
@@ -213,8 +271,14 @@ class BestTrajectoryAnimator:
         output_dir: Path,
         device: str = "auto",
         fps: int = DEFAULT_FPS,
+        selection_file: Path | None = None,
     ) -> None:
-        """Store every input path needed to reproduce the animations from scratch."""
+        """Store every input path needed to reproduce the animations from scratch.
+
+        `selection_file` is optional; when set, `run()` skips the automatic
+        lowest-mean-MSE selector and renders exactly the trajectories named
+        in the YAML mapping `{bin_name: traj_index}`.
+        """
         self.egnn_checkpoint = egnn_checkpoint
         self.hgnn_checkpoint = hgnn_checkpoint
         self.egnn_config = egnn_config
@@ -223,6 +287,7 @@ class BestTrajectoryAnimator:
         self.output_dir = output_dir
         self.device = device
         self.fps = fps
+        self.selection_file = selection_file
 
     def run(self) -> list[AnimationOutputs]:
         """Execute the full pipeline; return one AnimationOutputs per encounter bin."""
@@ -234,7 +299,13 @@ class BestTrajectoryAnimator:
         hgnn_predicted = self._rollout_for_model(
             "hgnn", self.hgnn_config, self.hgnn_checkpoint, test_bundle.states, torch_device
         )
-        selections = select_best_trajectories(test_bundle, egnn_predicted, hgnn_predicted)
+        if self.selection_file is None:
+            selections = select_best_trajectories(test_bundle, egnn_predicted, hgnn_predicted)
+        else:
+            logger.info("using manual trajectory selection from %s", self.selection_file)
+            selections = select_trajectories_from_file(
+                test_bundle, egnn_predicted, hgnn_predicted, self.selection_file
+            )
         return self._render_all(test_bundle, egnn_predicted, hgnn_predicted, selections)
 
     def _resolve_device(self) -> torch.device:
@@ -358,6 +429,94 @@ def _require_matching_shapes(
         raise ValueError(msg)
 
 
+def _load_selection_yaml(path: Path) -> dict[str, int]:
+    """Parse `{bin_name: traj_index}` from disk; reject malformed shapes up front."""
+    with path.open() as f:
+        raw = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        msg = f"selection file {path} must be a mapping; got {type(raw).__name__}"
+        raise ValueError(msg)
+    parsed: dict[str, int] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            msg = f"selection key {key!r} in {path} must be a string"
+            raise ValueError(msg)
+        # bool is a subclass of int in Python; reject explicitly so `true`/`false` are not coerced.
+        if isinstance(value, bool) or not isinstance(value, int):
+            msg = (
+                f"selection value for {key!r} in {path} must be an integer; "
+                f"got {type(value).__name__}"
+            )
+            raise ValueError(msg)
+        parsed[key] = value
+    return parsed
+
+
+def _require_complete_bin_coverage(
+    raw: dict[str, int], bin_names: list[str], selection_path: Path
+) -> None:
+    """Every test-set bin must be named exactly once; no extras allowed."""
+    yaml_names = set(raw.keys())
+    expected = set(bin_names)
+    missing = sorted(expected - yaml_names)
+    unknown = sorted(yaml_names - expected)
+    if missing:
+        msg = (
+            f"selection file {selection_path} is missing bins: {missing}. "
+            f"Expected one entry per encounter bin: {bin_names}"
+        )
+        raise ValueError(msg)
+    if unknown:
+        msg = (
+            f"selection file {selection_path} has unknown bin names: {unknown}. "
+            f"Expected one entry per encounter bin: {bin_names}"
+        )
+        raise ValueError(msg)
+
+
+def _require_index_in_range(idx: int, bin_name: str, n_traj: int) -> None:
+    """Trajectory indices must point at a real row of the test bundle."""
+    if idx < 0 or idx >= n_traj:
+        msg = (
+            f"trajectory index {idx} for bin {bin_name!r} is out of range (n_trajectories={n_traj})"
+        )
+        raise ValueError(msg)
+
+
+def _require_index_in_bin(
+    idx: int,
+    bin_name: str,
+    bin_id: int,
+    encounter_bin_id: npt.NDArray[np.integer],
+) -> None:
+    """The selected index must actually live in the bin the YAML assigns it to."""
+    actual_bin_id = int(encounter_bin_id[idx])
+    if actual_bin_id != bin_id:
+        msg = (
+            f"trajectory {idx} is assigned to bin {bin_name!r} (id={bin_id}) in the "
+            f"selection file but lives in bin id={actual_bin_id} in the test set"
+        )
+        raise ValueError(msg)
+
+
+def _require_finite_predictions(
+    idx: int,
+    bin_name: str,
+    egnn_mse: npt.NDArray[np.floating],
+    hgnn_mse: npt.NDArray[np.floating],
+) -> None:
+    """Reject manual picks whose rollout diverged; the animation would be a NaN swarm."""
+    egnn_ok = bool(np.isfinite(egnn_mse[idx]))
+    hgnn_ok = bool(np.isfinite(hgnn_mse[idx]))
+    if not (egnn_ok and hgnn_ok):
+        missing_models = [name for name, ok in (("EGNN", egnn_ok), ("HGNN", hgnn_ok)) if not ok]
+        msg = (
+            f"trajectory {idx} in bin {bin_name!r} has non-finite mean rollout MSE for "
+            f"{', '.join(missing_models)}; manual selection cannot use it"
+        )
+        raise ValueError(msg)
+
+
 def _shared_axis_limits(
     panels: list[npt.NDArray[np.floating]],
 ) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -461,6 +620,15 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS)
+    parser.add_argument(
+        "--selection-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional YAML mapping {bin_name: traj_index}; when set, render those exact "
+            "trajectories instead of running the automatic lowest-mean-MSE selector."
+        ),
+    )
     args = parser.parse_args()
 
     BestTrajectoryAnimator(
@@ -472,6 +640,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         device=args.device,
         fps=args.fps,
+        selection_file=Path(args.selection_file) if args.selection_file else None,
     ).run()
 
 

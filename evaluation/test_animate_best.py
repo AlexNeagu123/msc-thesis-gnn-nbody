@@ -25,6 +25,7 @@ from evaluation.animate_best import (
     _shared_axis_limits,
     render_three_panel_animation,
     select_best_trajectories,
+    select_trajectories_from_file,
 )
 
 
@@ -296,6 +297,7 @@ class _FakeAnimator(BestTrajectoryAnimator):
         egnn_predicted: npt.NDArray[np.floating],
         hgnn_predicted: npt.NDArray[np.floating],
         output_dir: Path,
+        selection_file: Path | None = None,
     ) -> None:
         """Skip the parent __init__: the disk-loading hooks are stubbed below."""
         self.egnn_checkpoint = Path("unused")
@@ -306,6 +308,7 @@ class _FakeAnimator(BestTrajectoryAnimator):
         self.output_dir = output_dir
         self.device = "cpu"
         self.fps = 10
+        self.selection_file = selection_file
         self._bundle = bundle
         self._egnn_predicted = egnn_predicted
         self._hgnn_predicted = hgnn_predicted
@@ -355,3 +358,121 @@ def test_animator_orchestrator_renders_one_animation_per_bin(tmp_path: Path) -> 
         assert out.gif_path is not None
         assert out.gif_path.is_file()
         assert out.gif_path.name == f"{out.selection.basename}.gif"
+
+
+def _write_selection_yaml(tmp_path: Path, mapping: dict[str, int]) -> Path:
+    """Persist a small selection mapping for the manual-selection tests."""
+    path = tmp_path / "animation_selection.yaml"
+    path.write_text("\n".join(f"{k}: {v}" for k, v in mapping.items()) + "\n")
+    return path
+
+
+def _manual_selector_inputs() -> tuple[
+    Trajectories, npt.NDArray[np.floating], npt.NDArray[np.floating]
+]:
+    """Six-trajectory bundle covering all three bins, finite predictions across the board."""
+    truth = _states(n_traj=6)
+    egnn = _predicted_with_offsets(truth, [0.1, 0.5, 0.3, 0.4, 0.2, 0.6])
+    hgnn = _predicted_with_offsets(truth, [0.2, 0.4, 0.1, 0.5, 0.3, 0.4])
+    bundle = _build_bundle(
+        truth,
+        bin_ids=[0, 0, 1, 1, 2, 2],
+        d_mins=[0.01, 0.02, 0.05, 0.07, 0.5, 0.7],
+    )
+    return bundle, egnn, hgnn
+
+
+def test_select_trajectories_from_file_returns_requested_indices_in_bin_order(
+    tmp_path: Path,
+) -> None:
+    """A valid file picks the named indices and preserves canonical bin order."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 4})
+
+    selections = select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+    assert [s.bin_name for s in selections] == ["close", "mid", "far"]
+    assert [s.traj_index for s in selections] == [0, 3, 4]
+    # Numeric fields are populated, mirroring the automatic selector.
+    assert selections[0].d_min == bundle.min_pairwise_distance[0]
+    assert np.isfinite(selections[0].egnn_mean_state_mse)
+    assert np.isfinite(selections[0].hgnn_mean_state_mse)
+
+
+def test_select_trajectories_from_file_rejects_missing_bin(tmp_path: Path) -> None:
+    """A YAML that omits a test-set bin fails fast and names the missing entry."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3})  # 'far' missing
+
+    with pytest.raises(ValueError, match=r"missing bins: \['far'\]"):
+        select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+
+def test_select_trajectories_from_file_rejects_unknown_bin(tmp_path: Path) -> None:
+    """A YAML with a bin name absent from the test set fails fast."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 4, "extreme": 1})
+
+    with pytest.raises(ValueError, match=r"unknown bin names: \['extreme'\]"):
+        select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+
+def test_select_trajectories_from_file_rejects_out_of_range_index(tmp_path: Path) -> None:
+    """An index past the test set's row count is caught with a specific message."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 999})
+
+    with pytest.raises(ValueError, match="out of range"):
+        select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+
+def test_select_trajectories_from_file_rejects_wrong_bin_assignment(tmp_path: Path) -> None:
+    """An index that exists but lives in a different bin must be rejected loudly."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    # Trajectory 4 is in bin 2 ('far'); assigning it to 'close' must fail.
+    selection_path = _write_selection_yaml(tmp_path, {"close": 4, "mid": 3, "far": 5})
+
+    with pytest.raises(ValueError, match="lives in bin id=2"):
+        select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+
+def test_select_trajectories_from_file_rejects_non_finite_prediction(tmp_path: Path) -> None:
+    """A manual pick whose rollout diverged for either model is refused at validation time."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    # Poison trajectory 0's EGNN rollout with a mid-frame NaN; mean MSE becomes NaN.
+    egnn[0, 1, 0, 0] = float("nan")
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 4})
+
+    with pytest.raises(ValueError, match="non-finite mean rollout MSE for EGNN"):
+        select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
+
+
+def test_select_trajectories_from_file_rejects_non_integer_value(tmp_path: Path) -> None:
+    """The loader must reject malformed YAML values (floats, strings, lists, booleans)."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    path = tmp_path / "bad.yaml"
+    path.write_text("close: 0.5\nmid: 3\nfar: 4\n")
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        select_trajectories_from_file(bundle, egnn, hgnn, path)
+
+
+def test_animator_uses_manual_selection_when_file_provided(tmp_path: Path) -> None:
+    """End-to-end DI smoke: with selection_file set, run() takes the manual path."""
+    bundle, egnn, hgnn = _manual_selector_inputs()
+    # Manual picks differ from what the automatic selector would choose.
+    selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 4})
+    animator = _FakeAnimator(
+        bundle=bundle,
+        egnn_predicted=egnn,
+        hgnn_predicted=hgnn,
+        output_dir=tmp_path,
+        selection_file=selection_path,
+    )
+
+    outputs = animator.run()
+
+    assert [o.selection.traj_index for o in outputs] == [0, 3, 4]
+    for out in outputs:
+        assert out.gif_path is not None
+        assert out.gif_path.is_file()
