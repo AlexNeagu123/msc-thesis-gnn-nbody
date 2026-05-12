@@ -285,6 +285,54 @@ class RolloutReport:
 
 
 @dataclass
+class EnergyDriftStepSummary:
+    """Cross-trajectory relative-drift summary at one anchor rollout step.
+
+    Mirrors RolloutMetricSummary so the energy-by-horizon figure can be
+    built the same way as the MSE-by-horizon figure.
+    """
+
+    mean_finite: float | None
+    median: float | None
+    p95: float | None
+    finite_fraction: float | None
+
+    def to_dict(self) -> dict[str, float | None]:
+        """Serialize preserving step-summary key order."""
+        return {
+            "mean_finite": self.mean_finite,
+            "median": self.median,
+            "p95": self.p95,
+            "finite_fraction": self.finite_fraction,
+        }
+
+
+@dataclass
+class EnergyDriftCurves:
+    """Full per-step relative-drift curves across trajectories.
+
+    Mirrors RolloutMetricCurves but for the scalar drift metric (no
+    position/velocity split because drift is already scalar).
+    """
+
+    step: list[int]
+    mean_finite: list[float | None]
+    median: list[float | None]
+    p95: list[float | None]
+    finite_fraction: list[float | None]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize preserving drift-curves key order."""
+        return {
+            "step": self.step,
+            "mean_finite": self.mean_finite,
+            "median": self.median,
+            "p95": self.p95,
+            "finite_fraction": self.finite_fraction,
+        }
+
+
+@dataclass
 class EnergyDriftReport:
     """Drift summary for one energy quantity (physical or learned)."""
 
@@ -292,6 +340,9 @@ class EnergyDriftReport:
     max_relative_drift: DriftSummary
     per_trajectory_final: list[float | None]
     per_trajectory_max: list[float | None]
+    steps: dict[str, EnergyDriftStepSummary]
+    curves: EnergyDriftCurves
+    per_trajectory_at_steps: dict[str, list[float | None]]
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize preserving _energy_drift_report key order."""
@@ -300,6 +351,9 @@ class EnergyDriftReport:
             "max_relative_drift": self.max_relative_drift.to_dict(),
             "per_trajectory_final": self.per_trajectory_final,
             "per_trajectory_max": self.per_trajectory_max,
+            "steps": {k: v.to_dict() for k, v in self.steps.items()},
+            "curves": self.curves.to_dict(),
+            "per_trajectory_at_steps": self.per_trajectory_at_steps,
         }
 
 
@@ -489,6 +543,9 @@ def _energy_drift_from_dict(d: dict[str, Any]) -> EnergyDriftReport:
         max_relative_drift=DriftSummary(**d["max_relative_drift"]),
         per_trajectory_final=d["per_trajectory_final"],
         per_trajectory_max=d["per_trajectory_max"],
+        steps={k: EnergyDriftStepSummary(**v) for k, v in d["steps"].items()},
+        curves=EnergyDriftCurves(**d["curves"]),
+        per_trajectory_at_steps=d["per_trajectory_at_steps"],
     )
 
 

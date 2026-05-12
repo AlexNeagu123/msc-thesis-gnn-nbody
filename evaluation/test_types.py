@@ -155,6 +155,31 @@ def _egnn_report_dict() -> dict:
                 },
                 "per_trajectory_final": [4.89, 2.83, None, 1.6],
                 "per_trajectory_max": [15.49, 20.46, 1.35e28, 3.87],
+                "steps": {
+                    "1": {
+                        "mean_finite": 0.01,
+                        "median": 0.008,
+                        "p95": 0.03,
+                        "finite_fraction": 1.0,
+                    },
+                    "10": {
+                        "mean_finite": 0.5,
+                        "median": 0.4,
+                        "p95": 1.2,
+                        "finite_fraction": 1.0,
+                    },
+                },
+                "curves": {
+                    "step": [0, 1, 2, 3],
+                    "mean_finite": [0.0, 0.01, 0.12, 2.21],
+                    "median": [0.0, 0.008, 0.08, 1.39],
+                    "p95": [0.0, 0.03, 0.45, 6.68],
+                    "finite_fraction": [1.0, 1.0, 1.0, 0.75],
+                },
+                "per_trajectory_at_steps": {
+                    "1": [0.01, 0.008, 0.012, 0.009],
+                    "10": [0.4, 0.5, 0.3, None],
+                },
             },
         },
     }
@@ -169,6 +194,21 @@ def _hgnn_report_dict() -> dict:
         "max_relative_drift": {"mean": 0.1, "median": 0.1, "max": 0.2, "p95": 0.15},
         "per_trajectory_final": [0.05, 0.04, 0.06, None],
         "per_trajectory_max": [0.1, 0.08, 0.12, 0.15],
+        "steps": {
+            "1": {"mean_finite": 0.001, "median": 0.001, "p95": 0.003, "finite_fraction": 1.0},
+            "10": {"mean_finite": 0.01, "median": 0.01, "p95": 0.02, "finite_fraction": 1.0},
+        },
+        "curves": {
+            "step": [0, 1, 2, 3],
+            "mean_finite": [0.0, 0.001, 0.005, 0.05],
+            "median": [0.0, 0.001, 0.004, 0.05],
+            "p95": [0.0, 0.003, 0.01, 0.08],
+            "finite_fraction": [1.0, 1.0, 1.0, 0.95],
+        },
+        "per_trajectory_at_steps": {
+            "1": [0.001, 0.001, 0.001, 0.001],
+            "10": [0.01, 0.009, 0.01, 0.011],
+        },
     }
     return base
 

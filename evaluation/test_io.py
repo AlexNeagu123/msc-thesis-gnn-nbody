@@ -121,6 +121,22 @@ def _egnn_fixture() -> dict:
                 "max_relative_drift": {"mean": 0.0, "median": 0.0, "max": 0.0, "p95": 0.0},
                 "per_trajectory_final": [0.0],
                 "per_trajectory_max": [0.0],
+                "steps": {
+                    "1": {
+                        "mean_finite": 0.0,
+                        "median": 0.0,
+                        "p95": 0.0,
+                        "finite_fraction": 1.0,
+                    },
+                },
+                "curves": {
+                    "step": [0],
+                    "mean_finite": [0.0],
+                    "median": [0.0],
+                    "p95": [0.0],
+                    "finite_fraction": [1.0],
+                },
+                "per_trajectory_at_steps": {"1": [0.0]},
             },
         },
     }

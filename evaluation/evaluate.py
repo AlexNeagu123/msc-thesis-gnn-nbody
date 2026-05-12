@@ -20,7 +20,9 @@ from evaluation._types import (
     EncounterBinDefinition,
     EncounterBinReport,
     EncounterBinsReport,
+    EnergyDriftCurves,
     EnergyDriftReport,
+    EnergyDriftStepSummary,
     EnergyReport,
     EvaluationMetadata,
     EvaluationReport,
@@ -164,7 +166,7 @@ def build_evaluation_report(
     )
 
     rollout = _build_rollout_report(rollout_mse, steps)
-    energy = _build_energy_report(model, predicted, device)
+    energy = _build_energy_report(model, predicted, device, steps)
 
     encounter_bins = None
     if test_bundle is not None and test_bundle.encounter_bin_id is not None:
@@ -211,12 +213,13 @@ def _build_energy_report(
     model: nn.Module,
     predicted: np.ndarray,
     device: torch.device,
+    anchor_steps: list[int],
 ) -> EnergyReport:
     """Assemble an EnergyReport with optional learned-Hamiltonian drift."""
     return EnergyReport(
-        physical=_energy_drift_report(predicted),
+        physical=_energy_drift_report(predicted, anchor_steps),
         learned_hamiltonian=(
-            _learned_hamiltonian_drift(model, predicted, device)
+            _learned_hamiltonian_drift(model, predicted, device, anchor_steps)
             if isinstance(model, HGNN)
             else None
         ),
@@ -305,7 +308,7 @@ def _build_per_bin_report(
     rollout = _build_rollout_report(bin_rollout_mse, steps)
 
     bin_predicted = predicted[mask]
-    energy = _build_energy_report(model, bin_predicted, device)
+    energy = _build_energy_report(model, bin_predicted, device, steps)
 
     baseline_ratios = None
     if count > 0 and envelope_computer is not None:
@@ -486,34 +489,36 @@ def _fraction_below_at_final(per_trajectory: np.ndarray, threshold: float) -> fl
     return _float(np.mean(np.isfinite(final) & (final < threshold)))
 
 
-def _energy_drift_report(trajectories: np.ndarray) -> EnergyDriftReport:
+def _energy_drift_report(trajectories: np.ndarray, anchor_steps: list[int]) -> EnergyDriftReport:
     """Summarize relative drift in the known physical energy."""
-    final_drifts = []
-    max_drifts = []
-
-    for traj in trajectories:
-        energy = compute_energy(traj)
-        drift = _relative_drift(energy)
-        final_drifts.append(drift[-1])
-        max_drifts.append(_nanmax(drift))
-
-    return EnergyDriftReport(
-        final_relative_drift=_summarize_drift(np.asarray(final_drifts)),
-        max_relative_drift=_summarize_drift(np.asarray(max_drifts)),
-        per_trajectory_final=final_drifts,
-        per_trajectory_max=max_drifts,
-    )
+    drift_matrix = _physical_drift_matrix(trajectories)
+    return _build_energy_drift_report(drift_matrix, anchor_steps)
 
 
 def _learned_hamiltonian_drift(
     model: HGNN,
     trajectories: np.ndarray,
     device: torch.device,
+    anchor_steps: list[int],
 ) -> EnergyDriftReport:
     """Summarize drift in the learned Hamiltonian."""
-    final_drifts = []
-    max_drifts = []
+    drift_matrix = _learned_drift_matrix(model, trajectories, device)
+    return _build_energy_drift_report(drift_matrix, anchor_steps)
 
+
+def _physical_drift_matrix(trajectories: np.ndarray) -> np.ndarray:
+    """Compute the (n_traj, n_steps) physical relative-drift matrix."""
+    rows = [_relative_drift(compute_energy(traj)) for traj in trajectories]
+    if not rows:
+        return np.empty((0, 0), dtype=float)
+    return np.asarray(rows, dtype=float)
+
+
+def _learned_drift_matrix(
+    model: HGNN, trajectories: np.ndarray, device: torch.device
+) -> np.ndarray:
+    """Compute the (n_traj, n_steps) learned-Hamiltonian relative-drift matrix."""
+    rows: list[np.ndarray] = []
     with torch.no_grad():
         for traj in trajectories:
             state = torch.from_numpy(traj).float().to(device)
@@ -521,15 +526,80 @@ def _learned_hamiltonian_drift(
             v = state[..., 2:4] / model.vel_std
             mass = state[..., 4:]
             hamiltonian = model.hamiltonian(x, v, mass).detach().cpu().numpy()
-            drift = _relative_drift(hamiltonian)
-            final_drifts.append(drift[-1])
-            max_drifts.append(_nanmax(drift))
+            rows.append(_relative_drift(hamiltonian))
+    if not rows:
+        return np.empty((0, 0), dtype=float)
+    return np.asarray(rows, dtype=float)
+
+
+def _build_energy_drift_report(
+    drift_matrix: np.ndarray, anchor_steps: list[int]
+) -> EnergyDriftReport:
+    """Build the full EnergyDriftReport from a (n_traj, n_steps) drift matrix.
+
+    Handles empty bins (n_traj == 0) by returning a report whose summary
+    fields are None and whose per-step / per-traj containers are length-
+    consistent with the (zero-trajectory) input.
+    """
+    n_traj = drift_matrix.shape[0]
+    if n_traj == 0:
+        final_drifts: list[float | None] = []
+        max_drifts: list[float | None] = []
+    else:
+        final_drifts = [_optional_float(v) for v in drift_matrix[:, -1]]
+        max_drifts = [_optional_float(_nanmax(row)) for row in drift_matrix]
 
     return EnergyDriftReport(
-        final_relative_drift=_summarize_drift(np.asarray(final_drifts)),
-        max_relative_drift=_summarize_drift(np.asarray(max_drifts)),
+        final_relative_drift=_summarize_drift(np.asarray(final_drifts, dtype=float)),
+        max_relative_drift=_summarize_drift(np.asarray(max_drifts, dtype=float)),
         per_trajectory_final=final_drifts,
         per_trajectory_max=max_drifts,
+        steps={
+            str(step): _energy_drift_step_summary(drift_matrix[:, step] if n_traj else np.empty(0))
+            for step in anchor_steps
+        },
+        curves=_energy_drift_curves(drift_matrix),
+        per_trajectory_at_steps={
+            str(step): ([_optional_float(v) for v in drift_matrix[:, step]] if n_traj else [])
+            for step in anchor_steps
+        },
+    )
+
+
+def _energy_drift_step_summary(values: np.ndarray) -> EnergyDriftStepSummary:
+    """Summarize drift at one step across trajectories: mean_finite/median/p95/finite_fraction."""
+    if values.size == 0:
+        return EnergyDriftStepSummary(mean_finite=None, median=None, p95=None, finite_fraction=None)
+    finite = values[np.isfinite(values)]
+    return EnergyDriftStepSummary(
+        mean_finite=_optional_float(np.mean(finite)) if finite.size else None,
+        median=_optional_float(np.median(finite)) if finite.size else None,
+        p95=_optional_float(np.percentile(finite, 95)) if finite.size else None,
+        finite_fraction=_float(np.mean(np.isfinite(values))),
+    )
+
+
+def _energy_drift_curves(drift_matrix: np.ndarray) -> EnergyDriftCurves:
+    """Build the per-step curves block from the full drift matrix."""
+    n_traj, n_steps = drift_matrix.shape
+    if n_traj == 0:
+        return EnergyDriftCurves(step=[], mean_finite=[], median=[], p95=[], finite_fraction=[])
+    means: list[float | None] = []
+    medians: list[float | None] = []
+    p95s: list[float | None] = []
+    finite_fractions: list[float | None] = []
+    for step in range(n_steps):
+        summary = _energy_drift_step_summary(drift_matrix[:, step])
+        means.append(summary.mean_finite)
+        medians.append(summary.median)
+        p95s.append(summary.p95)
+        finite_fractions.append(summary.finite_fraction)
+    return EnergyDriftCurves(
+        step=list(range(n_steps)),
+        mean_finite=means,
+        median=medians,
+        p95=p95s,
+        finite_fraction=finite_fractions,
     )
 
 
