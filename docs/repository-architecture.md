@@ -1,45 +1,51 @@
-# Repository Architecture: Responsibility Boundaries
+# Repository Architecture
 
 Author: Alexandru Neagu
 
-## Purpose
+This repository is laid out around the final experiment workflow:
 
-This document describes how the thesis implementation is organized and why the current separation of files matters. The product specification explains what the software does. This document explains where each responsibility belongs.
+```text
+configs -> data -> models -> training -> evaluation -> reports / notebooks / Colab
+```
 
-The architecture follows one rule:
-
-> Orchestration coordinates work, typed contracts define shape, I/O modules own persistence, numeric modules compute values, and notebooks visualize or launch experiments.
-
-This matters because the repository is now an experimental evidence pipeline. When a thesis table cites a number, the path from configuration, to checkpoint, to `metrics.json`, to report should be easy to trace.
+A reported number should be easy to trace back to the config, checkpoint, `metrics.json`, and report that produced it.
 
 ## Repository Map
 
 ```text
-configs/      experiment contracts
-data/         trajectory generation, HDF5 I/O, dataset loading
-models/       EGNN and HGNN architectures
-training/     training loop, checkpoints, diagnostics, sweeps
-evaluation/   official metrics, reports, and diagnostic plots
-colab/        remote execution launcher
-docs/         canonical documentation
-utils.py      small shared utilities
+configs/      YAML configs for data, EGNN, HGNN
+data/         REBOUND generation, stratification, HDF5 I/O, transition datasets
+models/       EGNN, HGNN, and simple baselines
+training/     trainer, curriculum schedule, checkpointing, validation scoring
+evaluation/   checkpoint evaluation, reports, figures, chunked forecasts, animations
+colab/        remote training/evaluation notebooks
+docs/         short product and architecture documentation
+runs/         ignored experiment outputs
 ```
 
-Generated artifacts are intentionally separate:
+## File Layout
+
+Generated data:
 
 ```text
-data/output/          generated HDF5 datasets
-runs/                 canonical experiment archive (checkpoints + metrics + evaluation, colocated per run)
-checkpoints/          legacy / scratch checkpoint dump (older default; kept readable but not aggregated here)
-logs/                 legacy / scratch metric dump (older default; kept readable but not aggregated here)
-results/evaluation/   fallback evaluation output for ad-hoc evals of legacy `checkpoints/...` runs
+data/output/train.h5
+data/output/val.h5
+data/output/test.h5
 ```
 
-`runs/` is the source of truth for thesis-quality experiment evidence. Each
-run is self-contained:
+Model runs:
 
 ```text
-runs/<mode>/<model>/n<N_TRAIN>/<run_id>/
+runs/egnn/<run_id>/
+  best.pt
+  latest.pt
+  metrics.csv
+  diagnostics.log
+  evaluation/
+    metrics.json
+    summary.csv
+
+runs/hgnn/<run_id>/
   best.pt
   latest.pt
   metrics.csv
@@ -49,187 +55,124 @@ runs/<mode>/<model>/n<N_TRAIN>/<run_id>/
     summary.csv
 ```
 
-Modes that currently land under `runs/`:
-
-| Mode | Layout |
-| --- | --- |
-| official model runs | `runs/<model>/<run_id>/` |
-| optional scaling | `runs/scaling/<model>/n<N_TRAIN>/<run_id>/` |
-| optional sweep | `runs/sweep/<model>/lr_<lr>_nf_<nf>/<run_id>/` |
-| optional baselines | `runs/baselines/<baseline>/evaluation/` |
-
-The active EGNN/HGNN YAML files write checkpoints and logs directly under
-`runs/egnn/` and `runs/hgnn/`. `results/evaluation/` is a fallback the
-evaluator falls through to only when a checkpoint is not under `runs/...`.
-All artifact roots are ignored by git.
-
-## Dependency Direction
-
-The intended direction is:
+Baseline evaluation:
 
 ```text
-configs -> data -> models -> training -> evaluation -> reports / notebooks / Colab
+runs/baselines/constant_velocity/evaluation/
+  metrics.json
+  summary.csv
 ```
 
-The main restrictions are:
+Comparison reports:
 
-- `models/` should not depend on `training/` or `evaluation/`.
-- `_types.py` files define contracts.
-- `_io.py` files own filesystem and serialization boundaries.
-- `evaluation/metrics.py` stays numeric and free of plotting, JSON, CSV, and notebook dependencies.
-- `evaluation/plots.py` owns matplotlib and IPython-facing diagnostics.
-- CLI modules coordinate existing components; they should not become schema owners.
+```text
+runs/reports/<name>/
+  report.md
+  figures/
+  tables/
+  chunked/
+  animations/
+  selections/
+```
 
-This is the core of the refactor: the code is split by responsibility, not by file-size convenience.
+`runs/` and `data/output/` are ignored by git. Keep important outputs in Drive or another experiment archive.
 
-## Module Ownership
-
-| Module | Owns |
-| --- | --- |
-| `configs/` | YAML definitions for data generation and model training. |
-| `data/` | Simulation parameters, generated trajectory schema, HDF5 read/write, and transition dataset loading. |
-| `models/` | Pure PyTorch architecture definitions for EGNN and HGNN. |
-| `training/` | Optimization, checkpoint lifecycle, metrics CSVs, diagnostics, scaling runs, and sweeps. |
-| `evaluation/` | Official numeric evidence: report schema, metrics, rollout evaluation, energy drift, and markdown aggregation. |
-| `colab/` | One-run remote launcher for `(MODEL, N_TRAIN)` experiments with Drive persistence. |
-| `docs/` | Canonical documentation: product behavior and repository architecture. |
-
-## File-Level Contracts
+## Module Roles
 
 ### Data
 
-| File | Responsibility |
+| File | Role |
 | --- | --- |
-| `data/_types.py` | `DataGenConfig`, simulation parameters, split config, trajectory bundle, trajectory metadata. |
-| `data/_io.py` | Data YAML loading and HDF5 trajectory persistence. |
-| `data/generate.py` | REBOUND-based trajectory generation. |
-| `data/dataset.py` | Conversion from trajectories to one-step supervised transitions. |
+| `data/_types.py` | data-generation and trajectory dataclasses |
+| `data/_io.py` | YAML loading and HDF5 read/write |
+| `data/encounters.py` | encounter-distance bins and pure binning helpers |
+| `data/generate.py` | REBOUND trajectory generation and stratified acceptance loop |
+| `data/dataset.py` | transition dataset used by training |
 
-The HDF5 schema belongs only in `data/_io.py`. Training and evaluation consume typed loaders instead of reaching into raw HDF5 keys.
+HDF5 read/write details stay in `data/_io.py`. Training and evaluation use typed loaders instead of raw HDF5 keys.
 
 ### Models
 
-| File | Responsibility |
+| File | Role |
 | --- | --- |
-| `models/egnn.py` | E(n)-equivariant graph layers and direct next-state prediction. |
-| `models/hgnn.py` | Kinetic branch, potential branch, learned Hamiltonian, and leapfrog-style step. |
+| `models/egnn.py` | E(n)-equivariant next-state predictor |
+| `models/hgnn.py` | graph Hamiltonian model and learned-energy dynamics |
+| `models/baselines.py` | simple baselines used by evaluation |
 
-Model files define the differentiable functions. They should not know where checkpoints, logs, or evaluation reports live.
+Model code should stay free of filesystem and report concerns.
 
 ### Training
 
-| File | Responsibility |
+| File | Role |
 | --- | --- |
-| `training/_types.py` | Training config, checkpoint schema, training result, epoch metrics. |
-| `training/_io.py` | Config loading, checkpoint read/write, metrics CSV read/write boundary. |
-| `training/train.py` | Main trainer and CLI. |
-| `training/diagnostics.py` | Outlier batch diagnostics. |
-| `training/scaling.py` | Data-scaling training orchestration. |
-| `training/sweep.py` | EGNN noise-factor and learning-rate sweep. |
+| `training/_types.py` | training config, checkpoint dataclasses, epoch metrics |
+| `training/_io.py` | config loading, checkpoint read/write, and metrics CSV writing |
+| `training/train.py` | trainer and CLI |
+| `training/rollout_score.py` | validation rollout scoring, including per-group scoring |
+| `training/diagnostics.py` | outlier and skipped-batch diagnostics |
 
-Training owns optimization. It does not own official thesis metrics.
+Training selects checkpoints. Test-set results are produced later by evaluation.
 
 ### Evaluation
 
-| File | Responsibility |
+| File | Role |
 | --- | --- |
-| `evaluation/_types.py` | Evaluation report schema and flattened summary row. |
-| `evaluation/_io.py` | `metrics.json` and `summary.csv` persistence. |
-| `evaluation/metrics.py` | Single-step, rollout, divergence, distance, and energy computations. |
-| `evaluation/evaluate.py` | Checkpoint evaluation and report construction. |
-| `evaluation/scaling_report.py` | Markdown aggregation across evaluated runs. |
-| `evaluation/plots.py` | Notebook diagnostics and animations. |
+| `evaluation/_types.py` | evaluation report dataclasses |
+| `evaluation/_io.py` | `metrics.json` and `summary.csv` read/write |
+| `evaluation/_binning.py` | per-bin mask helpers |
+| `evaluation/_loader.py` | shared trained-model loading |
+| `evaluation/metrics.py` | single-step, rollout, divergence, and energy metrics |
+| `evaluation/evaluate.py` | trained-checkpoint evaluation |
+| `evaluation/evaluate_baseline.py` | baseline evaluation |
+| `evaluation/report.py` | comparison-report driver |
+| `evaluation/report_tables.py` | report CSV and markdown tables |
+| `evaluation/report_figures.py` | presentation-grade report figures |
+| `evaluation/evaluate_chunked.py` | periodically corrected short-horizon forecasting |
+| `evaluation/animate_best.py` | representative trajectory animations |
+| `evaluation/plots.py` | notebook-facing plotting utilities |
+| `evaluation/visual_diagnostics.ipynb` | manual trajectory inspection and selection |
 
-Evaluation owns the official numbers. `metrics.json` is the canonical artifact; `summary.csv` is a table-friendly projection.
+Evaluation produces the numbers used in the thesis. The report figures and tables are built from `metrics.json`.
 
-## Documentation Ownership
+### Colab
 
-The repository has one README policy:
-
-- Root `README.md` is the entry point.
-- Durable details live in `docs/`.
-- Module-level READMEs are avoided unless there is a strong reason.
-
-Canonical documents:
-
-| Document | Purpose |
+| File | Role |
 | --- | --- |
-| `docs/product-specification.md` | Thesis framing, capabilities, commands, dataset contract, evaluation contract, references. |
-| `docs/repository-architecture.md` | File structure, responsibility boundaries, artifact policy, maintenance rules. |
+| `colab/train_colab.ipynb` | train EGNN or HGNN from Drive data |
+| `colab/evaluate_report_artifacts.ipynb` | evaluate checkpoints and generate reports/animations |
 
-After each larger structural or behavioral change, explicitly check whether the root README or canonical docs need updates.
+Colab notebooks are launchers. Product logic should remain in importable modules.
 
-## Test Placement
+## Practical Rules
 
-Tests live next to the source they protect:
+- Put dataclasses in `_types.py`.
+- Put file read/write code in `_io.py`.
+- Keep metric calculations out of plotting/report modules.
+- Keep models independent of training and evaluation code.
+- Keep notebooks thin; reusable behavior belongs in Python modules.
+- Keep generated data and runs out of git.
+- Tie thesis results to saved configs, checkpoints, `metrics.json`, and generated reports.
 
-```text
-data/test_*.py
-models/test_*.py
-training/test_*.py
-evaluation/test_*.py
-```
+## Extension Pattern
 
-This keeps ownership visible. If a contract changes, the nearest tests should explain what behavior must still hold.
+Add a metric:
 
-## Boundary Rules
+1. compute it in `evaluation/metrics.py`,
+2. add dataclasses in `evaluation/_types.py`,
+3. build it in `evaluation/evaluate.py`,
+4. save/load it through `evaluation/_io.py`,
+5. add tests near the changed layer.
 
-The guardrails are:
+Add a report figure:
 
-- Add dataclasses and schema objects to `_types.py`.
-- Add JSON, CSV, HDF5, YAML, and checkpoint persistence to `_io.py`.
-- Keep model files free of filesystem, training-loop, and evaluation-report concerns.
-- Keep numeric metric code free of plotting and notebook dependencies.
-- Keep notebooks as launchers or diagnostics, not hidden product logic.
-- Keep generated artifacts out of git.
-- Tie thesis numbers to preserved `metrics.json`, `summary.csv`, or generated markdown reports.
-- Add tests at the ownership level of the change.
+1. read only from `EvaluationReport`,
+2. implement plotting in `evaluation/report_figures.py`,
+3. call it from `evaluation/report.py`,
+4. add a focused figure test and a report-orchestrator test.
 
-These rules are practical. They prevent the evidence pipeline from becoming a collection of scripts that are hard to audit.
+Add a training feature:
 
-## Extension Rules
-
-Add a new model:
-
-1. Implement it under `models/`.
-2. Add model construction in orchestration.
-3. Add a config under `configs/`.
-4. Add model tests.
-5. Confirm training and evaluation artifacts remain compatible.
-
-Add a new metric:
-
-1. Implement numeric computation in `evaluation/metrics.py`.
-2. Add report fields in `evaluation/_types.py`.
-3. Add construction in `evaluation/evaluate.py`.
-4. Persist through `evaluation/_io.py`.
-5. Add metric and serialization tests.
-
-Add a new artifact:
-
-1. Define its shape in the relevant `_types.py`.
-2. Add read/write behavior in the relevant `_io.py`.
-3. Call it from orchestration.
-4. Test the round trip.
-
-The pattern is always the same: define the contract, centralize persistence, keep orchestration thin, and test the boundary.
-
-## Generated Artifact Policy
-
-`runs/` is the canonical archive for thesis-quality experiment evidence.
-Everything an experiment needs to be audited later (checkpoint, training
-metrics, diagnostics, evaluation report) sits inside one `<run_id>` folder
-under `runs/`. The other roots are legacy or fallback only.
-
-Ignored artifact roots:
-
-- `data/output/` — generated datasets
-- `runs/` — canonical experiment archive (preserve important entries in Drive)
-- `checkpoints/` — legacy / scratch
-- `logs/` — legacy / scratch
-- `results/evaluation/` — fallback for ad-hoc eval of legacy checkpoints
-- `evaluation/runs/` — historical, no longer written
-
-Preserve important artifacts in Drive or local experiment storage when
-they are needed for thesis evidence. Commit the code, configs, docs, and
-reports that explain how those artifacts were produced.
+1. add config fields to `training/_types.py`,
+2. wire behavior in `training/train.py`,
+3. save/load any new epoch or checkpoint fields in `training/_io.py`,
+4. add config and trainer tests.

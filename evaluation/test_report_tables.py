@@ -65,16 +65,19 @@ def _rewrite_energy_curves(curves: dict) -> None:
 
 
 def _shift_final_mse(report: dict, factor: float) -> dict:
-    """Multiply the final-step median MSE of every bin by `factor`.
+    """Multiply the final-step median state and position MSE of every bin by `factor`.
 
     Used to give the three fixtures distinct numeric signatures so the
-    tests can confirm CSV rows pull from the right report.
+    tests can confirm CSV rows pull from the right report. Both state_mse
+    and position_mse are shifted because the headline now lives on
+    position MSE while the technical state-MSE columns remain in the CSV.
     """
     out = copy.deepcopy(report)
     for bin_entry in out["encounter_bins"]["by_name"].values():
-        median_curve = bin_entry["rollout"]["curves"]["state_mse"]["median"]
-        if median_curve and median_curve[-1] is not None:
-            median_curve[-1] = median_curve[-1] * factor
+        for metric in ("state_mse", "position_mse"):
+            median_curve = bin_entry["rollout"]["curves"][metric]["median"]
+            if median_curve and median_curve[-1] is not None:
+                median_curve[-1] = median_curve[-1] * factor
     return out
 
 
@@ -134,15 +137,29 @@ def test_per_bin_summary_drops_baseline_score_columns(tmp_path: Path) -> None:
 
 
 def test_per_bin_summary_includes_baseline_physical_columns(tmp_path: Path) -> None:
-    """Baseline final MSE and energy drift columns must be present."""
+    """Baseline final MSE (position + state) and energy drift columns must be present."""
     egnn, hgnn, baseline = _build_reports()
     path = tmp_path / "per_bin_summary.csv"
 
     write_per_bin_summary_csv(egnn, hgnn, baseline, path)
 
     columns, _ = _read_csv(path)
+    assert "baseline_final_median_position_mse" in columns
     assert "baseline_final_median_state_mse" in columns
     assert "baseline_energy_drift_median" in columns
+
+
+def test_per_bin_summary_position_mse_columns_lead_state_mse(tmp_path: Path) -> None:
+    """Position MSE is the audience-facing headline; its columns sit before state MSE."""
+    egnn, hgnn, baseline = _build_reports()
+    path = tmp_path / "per_bin_summary.csv"
+
+    write_per_bin_summary_csv(egnn, hgnn, baseline, path)
+
+    columns, _ = _read_csv(path)
+    pos_idx = columns.index("egnn_final_median_position_mse")
+    state_idx = columns.index("egnn_final_median_state_mse")
+    assert pos_idx < state_idx
 
 
 def test_per_bin_summary_row_order_matches_canonical_bin_order(tmp_path: Path) -> None:
@@ -169,6 +186,15 @@ def test_per_bin_summary_values_pull_from_correct_model(tmp_path: Path) -> None:
     egnn_close = egnn.encounter_bins.by_name["close"]
     hgnn_close = hgnn.encounter_bins.by_name["close"]
     baseline_close = baseline.encounter_bins.by_name["close"]
+    assert float(close_row["egnn_final_median_position_mse"]) == pytest.approx(
+        egnn_close.rollout.curves.position_mse.median[-1]
+    )
+    assert float(close_row["hgnn_final_median_position_mse"]) == pytest.approx(
+        hgnn_close.rollout.curves.position_mse.median[-1]
+    )
+    assert float(close_row["baseline_final_median_position_mse"]) == pytest.approx(
+        baseline_close.rollout.curves.position_mse.median[-1]
+    )
     assert float(close_row["egnn_final_median_state_mse"]) == pytest.approx(
         egnn_close.rollout.curves.state_mse.median[-1]
     )
@@ -192,16 +218,31 @@ def test_key_timestep_summary_columns_are_pinned(tmp_path: Path) -> None:
 
 
 def test_key_timestep_summary_includes_baseline_columns(tmp_path: Path) -> None:
-    """The per-step CSV must include baseline state-MSE columns."""
+    """The per-step CSV must include baseline position + state MSE columns."""
     egnn, hgnn, baseline = _build_reports()
     path = tmp_path / "key_timestep_summary.csv"
 
     write_key_timestep_summary_csv(egnn, hgnn, baseline, path)
 
     columns, _ = _read_csv(path)
+    assert "baseline_position_mse_median" in columns
+    assert "baseline_position_mse_p95" in columns
     assert "baseline_state_mse_median" in columns
     assert "baseline_state_mse_p95" in columns
     assert "baseline_finite_fraction" in columns
+
+
+def test_key_timestep_summary_position_columns_lead_state_columns(tmp_path: Path) -> None:
+    """Position MSE columns appear before state MSE columns in the CSV header."""
+    egnn, hgnn, baseline = _build_reports()
+    path = tmp_path / "key_timestep_summary.csv"
+
+    write_key_timestep_summary_csv(egnn, hgnn, baseline, path)
+
+    columns, _ = _read_csv(path)
+    pos_idx = columns.index("egnn_position_mse_median")
+    state_idx = columns.index("egnn_state_mse_median")
+    assert pos_idx < state_idx
 
 
 def test_key_timestep_summary_iterates_bins_outer_steps_inner(tmp_path: Path) -> None:
@@ -247,7 +288,7 @@ def test_report_markdown_includes_provenance_and_artifacts(tmp_path: Path) -> No
     egnn, hgnn, baseline = _build_reports()
     output_dir = tmp_path
     tables = ["per_bin_summary.csv", "key_timestep_summary.csv"]
-    figures = ["01_rollout_mse_by_bin.png", "02_energy_drift_by_bin.png"]
+    figures = ["01_rollout_position_mse_by_bin.png", "02_energy_drift_by_bin.png"]
 
     write_report_markdown(
         egnn,
@@ -268,12 +309,12 @@ def test_report_markdown_includes_provenance_and_artifacts(tmp_path: Path) -> No
     assert "smooth" in md
     assert "tables/per_bin_summary.csv" in md
     assert "tables/key_timestep_summary.csv" in md
-    assert "figures/01_rollout_mse_by_bin.png" in md
+    assert "figures/01_rollout_position_mse_by_bin.png" in md
     assert "figures/02_energy_drift_by_bin.png" in md
 
 
 def test_report_markdown_headline_uses_physical_metrics(tmp_path: Path) -> None:
-    """The headline table lives on raw MSE + energy drift across all three models."""
+    """The headline table lives on raw position MSE + energy drift across all three models."""
     egnn, hgnn, baseline = _build_reports()
 
     write_report_markdown(
@@ -287,11 +328,14 @@ def test_report_markdown_headline_uses_physical_metrics(tmp_path: Path) -> None:
 
     md = (tmp_path / "report.md").read_text()
     assert "Headline: Per-bin Physical Metrics" in md
-    assert "EGNN final MSE" in md
-    assert "HGNN final MSE" in md
-    assert "Baseline final MSE" in md
+    assert "EGNN final position MSE" in md
+    assert "HGNN final position MSE" in md
+    assert "Baseline final position MSE" in md
     assert "EGNN energy drift" in md
     assert "Baseline energy drift" in md
+    # state MSE no longer surfaces in the public headline; it remains in CSVs only.
+    assert "EGNN final MSE" not in md
+    assert "median state MSE" not in md
 
 
 def test_report_markdown_drops_baseline_score_section(tmp_path: Path) -> None:

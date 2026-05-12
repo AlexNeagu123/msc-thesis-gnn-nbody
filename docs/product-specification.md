@@ -1,209 +1,106 @@
-# Product Specification: Inductive Biases for Chaotic N-Body Dynamics
+# Project Flow
 
 Author: Alexandru Neagu
 
-## Purpose
+This repository supports a master's thesis comparing two ways of learning chaotic 3-body gravitational motion:
 
-This repository is the experimental software artifact for a master's thesis on **physical inductive biases in graph neural networks**. The thesis question is:
+- **EGNN:** E(n)-equivariant graph message passing with direct next-state prediction.
+- **HGNN:** graph-based Hamiltonian dynamics with a learned decomposed Hamiltonian.
 
-> How do geometric equivariance and Hamiltonian mechanics affect accuracy, stability, and interpretability when learning chaotic attractive gravitational dynamics?
+The code follows one main path: generate the dataset, train both models under the same conditions, evaluate them on the same test set, and produce the figures, tables, and animations used in the presentation and thesis.
 
-The code exists to make that comparison reproducible. It generates a controlled 3-body gravitational dataset, trains two graph neural architectures under the same data and optimization protocol, evaluates them with the same numeric pipeline, and stores the evidence needed for thesis tables.
+## Data
 
-This is not a generic N-body simulator and not a model-serving application. It is a research workbench for comparing two architecture-level assumptions:
-
-- **EGNN:** graph structure plus E(n) equivariance. The model predicts the next state directly.
-- **HGNN:** graph structure plus Hamiltonian mechanics. The model learns a decomposed Hamiltonian, then derives the next state from it.
-
-The important object of study is not only predictive error. The study asks where each inductive bias helps: local accuracy, autoregressive rollout stability, physical-energy behavior, and interpretability of the learned dynamics.
-
-## Research Context
-
-The project follows the progression in the thesis presentation:
-
-1. Black-box neural networks can approximate chaotic 3-body trajectories, but do not encode conservation or relational structure by design.
-2. Interaction Networks introduced graph-based relational inductive bias for physical systems.
-3. Hamiltonian Neural Networks introduced conservation by learning an energy function and deriving dynamics from Hamilton's equations.
-4. EGNN introduced E(n)-equivariant graph message passing, making rotations and translations structural symmetries of the model.
-5. HGNN combined graph structure with a decomposed Hamiltonian, enabling energy-based dynamics and later symbolic inspection.
-
-The gap targeted here is narrower and thesis-specific:
-
-- EGNN and HGNN have not been compared on the same attractive chaotic gravitational benchmark.
-- HGNN was tested on several physical systems, including repulsive gravity, but not this exact attractive 3-body setup.
-- The relevant question is which inductive bias matters more under repeated rollout: geometric symmetry or Hamiltonian structure.
-
-## System Capabilities
-
-The software can:
-
-- Generate train, validation, and test trajectory datasets for equal-mass 2D gravitational 3-body dynamics.
-- Train EGNN and HGNN from YAML experiment configurations.
-- Slice a larger training dataset into controlled `N_TRAIN` subsets for data-scaling studies.
-- Run EGNN noise-injection and learning-rate sweeps.
-- Evaluate checkpoints with state, position, velocity, divergence, and energy-drift metrics.
-- Render scaling-study reports from saved `metrics.json` files.
-- Run long training and evaluation jobs from Google Colab while persisting outputs to Google Drive.
-
-The official thesis numbers should come from `metrics.json`, `summary.csv`, and generated scaling reports. Notebooks and plots are diagnostic surfaces, not the source of truth.
-
-## Model Contracts
-
-### EGNN
-
-EGNN implements the geometric inductive bias.
-
-Input:
-
-```text
-state_t: (n_particles, 5) = [x, y, vx, vy, mass]
-```
-
-Output:
-
-```text
-state_t+dt: (n_particles, 5)
-```
-
-Contract:
-
-- Uses graph message passing over particles.
-- Uses relative coordinate differences and squared distances.
-- Preserves E(n) equivariance by construction.
-- Predicts positions and velocities directly.
-- Does not enforce physical-energy conservation.
-
-### HGNN
-
-HGNN implements the Hamiltonian inductive bias.
-
-Input:
-
-```text
-state_t: (n_particles, 5) = [x, y, vx, vy, mass]
-```
-
-Output:
-
-```text
-state_t+dt: (n_particles, 5)
-```
-
-Contract:
-
-- Uses graph message passing over pairwise distances for potential-energy structure.
-- Learns a decomposed Hamiltonian `H = T + V`.
-- Computes dynamics through automatic differentiation of the learned energy.
-- Advances one step with a leapfrog-style integrator.
-- Exposes a learned Hamiltonian quantity for evaluation and interpretation.
-
-## Command Interface
-
-Run commands from `impl/`. Prefer `uv run` locally.
-
-### Generate Data
+The dataset used for the final experiments is grouped by how close the three bodies get during each trajectory. This lets us compare easy, medium, and hard motion regimes instead of reporting one average over everything. The config is:
 
 ```bash
 uv run python -m data.generate --config configs/data.yaml
 ```
 
-Arguments:
+It writes:
 
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--config` | No | `configs/data.yaml` | Data-generation YAML file. |
-
-Outputs:
-
-- `train_path`, `val_path`, and `test_path` from the config.
-- HDF5 files containing trajectories, physical energies, and metadata.
-
-### Train One Model
-
-For a thesis-quality run, write artifacts under the canonical `runs/`
-archive so checkpoints, metrics, and evaluation stay colocated:
-
-```bash
-uv run python -m training.train \
-  --config configs/egnn.yaml \
-  --n-train 1000 \
-  --artifact-dir runs/egnn
+```text
+data/output/train.h5
+data/output/val.h5
+data/output/test.h5
 ```
 
-The two training-only forms below use the same canonical roots from the YAML:
+The split is `1000 / 600 / 600`, with balanced groups:
+
+| Bin | Distance interval |
+| --- | --- |
+| `close` | `[0.00, 0.02)` |
+| `near` | `[0.02, 0.05)` |
+| `mid` | `[0.05, 0.15)` |
+| `wide` | `[0.15, 0.50)` |
+| `far` | `[0.50, +inf)` |
+
+Every HDF5 file includes trajectories, energies, metadata, and the group label for each trajectory. Training uses `train.h5` and `val.h5`; final comparisons use `test.h5`.
+
+## Training
+
+The training configs are:
+
+```text
+configs/egnn.yaml
+configs/hgnn.yaml
+```
+
+Both use:
+
+- `data/output/train.h5`
+- `data/output/val.h5`
+- curriculum horizons `[1, 5, 10, 20, 50, 100, 150, 199]`
+- validation checked separately for every trajectory group
+
+During training, validation is checked group by group. The code scores `close`, `near`, `mid`, `wide`, and `far` trajectories separately, then combines those scores when deciding which checkpoint is best. This keeps the selected model from looking good only because it performs well on the easier cases.
+
+Run locally:
 
 ```bash
 uv run python -m training.train --config configs/egnn.yaml
 uv run python -m training.train --config configs/hgnn.yaml
 ```
 
-Arguments:
+The configs write directly to:
 
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--config` | Yes | None | Model training YAML file. |
-| `--n-train` | No | Config value | Use only the first N training trajectories. |
-| `--artifact-dir` | No | YAML values | Single directory under which both checkpoints and metrics are written, force-enabling both. The trainer appends `<run_id>` as a per-run subdirectory. |
-| `--init-checkpoint` | No | None | Initialise model weights from a previous checkpoint; optimizer, scheduler, and run_id all start fresh. |
-
-Outputs (canonical layout, with `--artifact-dir runs/egnn`):
-
-- `runs/egnn/<run_id>/best.pt`
-- `runs/egnn/<run_id>/latest.pt`
-- `runs/egnn/<run_id>/metrics.csv`
-- `runs/egnn/<run_id>/diagnostics.log`
-
-### Run a Data-Scaling Sweep
-
-```bash
-uv run python -m training.scaling --config configs/egnn.yaml --sizes 1000,2000,5000
+```text
+runs/egnn/<run_id>/
+runs/hgnn/<run_id>/
 ```
 
-Arguments:
+Each run contains:
 
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--config` | Yes | None | Model training YAML file. |
-| `--sizes` | No | `1000,2000,5000` | Comma-separated training-set sizes. |
-| `--artifact-root` | No | `runs/scaling` | Parent directory for per-size run folders. Each size lands at `<root>/<model>/n<N>/<run_id>/`. |
-
-Purpose:
-
-- Produce matched checkpoints across training-set sizes.
-- Keep architecture and optimization fixed while varying only data volume.
-
-Outputs (default root):
-
-- `runs/scaling/<model>/n<N>/<run_id>/{best.pt, latest.pt, metrics.csv, diagnostics.log}`
-
-### Run a 2-D Hyperparameter Sweep (LR x noise)
-
-```bash
-uv run python -m training.sweep --config configs/egnn.yaml --epochs 200
+```text
+best.pt
+latest.pt
+metrics.csv
+diagnostics.log
 ```
 
-Arguments:
+For Colab training, use:
 
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--config` | No | `configs/egnn.yaml` | Base EGNN config. |
-| `--epochs` | No | `200` | Epochs per sweep cell. |
-| `--artifact-root` | No | `runs/sweep` | Parent directory for per-cell run folders. Each cell lands at `<root>/<model>/lr_<lr>_nf_<nf>/<run_id>/`. |
+```text
+colab/train_colab.ipynb
+```
 
-Current grid:
+The notebook expects the dataset under:
 
-- learning rates: `5e-4`, `1e-3`, `2e-3`
-- noise factors: `0.0`, `0.03`, `0.05`
+```text
+MyDrive/masters-thesis/data/output/train.h5
+MyDrive/masters-thesis/data/output/val.h5
+MyDrive/masters-thesis/data/output/test.h5
+```
 
-Purpose:
+and writes model runs to:
 
-- 2-D grid search; deliberately separate from the Colab single-axis noise sweep that lives under `runs/noise_sweep/...`.
+```text
+MyDrive/masters-thesis/runs/<model>/<run_id>/
+```
 
-### Evaluate a Checkpoint
+## Evaluation
 
-For checkpoints under `runs/`, the evaluator defaults to writing the
-report next to the checkpoint, so artifacts stay self-contained. Pass
-`--output-dir` only when overriding that default:
+Evaluate both trained checkpoints on the same grouped test set:
 
 ```bash
 uv run python -m evaluation.evaluate \
@@ -211,187 +108,145 @@ uv run python -m evaluation.evaluate \
   --checkpoint runs/egnn/<run_id>/best.pt \
   --test-path data/output/test.h5 \
   --device auto
+
+uv run python -m evaluation.evaluate \
+  --config configs/hgnn.yaml \
+  --checkpoint runs/hgnn/<run_id>/best.pt \
+  --test-path data/output/test.h5 \
+  --device auto
 ```
 
-This writes:
+For checkpoints under `runs/`, evaluation writes next to the checkpoint:
 
-- `runs/egnn/<run_id>/evaluation/metrics.json`
-- `runs/egnn/<run_id>/evaluation/summary.csv`
+```text
+runs/<model>/<run_id>/evaluation/metrics.json
+runs/<model>/<run_id>/evaluation/summary.csv
+```
 
-Arguments:
-
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--config` | Yes | None | Model config used to rebuild the architecture. |
-| `--checkpoint` | Yes | None | Checkpoint to evaluate. |
-| `--test-path` | No | `data/output/test.h5` | Test HDF5 file. |
-| `--output-dir` | No | See below | Evaluation output directory. |
-| `--device` | No | `auto` | `auto`, `cuda`, `mps`, or `cpu`. |
-
-`--output-dir` resolution:
-
-1. Explicit value always wins.
-2. Otherwise, if the checkpoint sits under any `runs/` ancestor, defaults
-   to `<run_dir>/evaluation/` (canonical layout).
-3. Otherwise (legacy `checkpoints/<model>/<run_id>/`), falls back to
-   `results/evaluation/<model>/<run_id>/`.
-
-Outputs:
-
-- `metrics.json`: canonical evaluation report.
-- `summary.csv`: flattened one-row summary for table drafting.
-
-### Build a Scaling Report
+Evaluate the constant-velocity baseline:
 
 ```bash
-uv run python -m evaluation.scaling_report \
-  --manifest path/to/scaling_runs.yaml \
-  --output runs/scaling_report.md
+uv run python -m evaluation.evaluate_baseline \
+  --baseline constant_velocity \
+  --train-path data/output/train.h5 \
+  --test-path data/output/test.h5 \
+  --output-dir runs/baselines/constant_velocity/evaluation \
+  --device auto
 ```
 
-Arguments:
+`metrics.json` is the detailed evaluation output. The report generator reads it to build the final tables and figures.
 
-| Argument | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `--manifest` | Yes | None | YAML manifest pointing to evaluation reports. |
-| `--output` | No | None | Optional markdown output path. |
+## Reports and Figures
 
-Purpose:
+Generate the comparison report after the EGNN, HGNN, and constant-velocity evaluations exist:
 
-- Read saved evaluation reports.
-- Group results by model and training-set size.
-- Render markdown tables for thesis discussion.
+```bash
+uv run python -m evaluation.report \
+  --egnn runs/egnn/<egnn_run_id>/evaluation/metrics.json \
+  --hgnn runs/hgnn/<hgnn_run_id>/evaluation/metrics.json \
+  --baseline runs/baselines/constant_velocity/evaluation/metrics.json \
+  --output runs/reports/official_1k
+```
 
-## Dataset Contract
-
-Generated HDF5 files contain:
+The report directory contains:
 
 ```text
-trajectories: (n_trajectories, n_frames, n_particles, 5)
-energies:     (n_trajectories, n_frames)
-metadata:     simulation and provenance attributes
+runs/reports/official_1k/
+  report.md
+  tables/
+    per_bin_summary.csv
+    key_timestep_summary.csv
+  figures/
+    01_rollout_position_mse_by_bin.{png,pdf}
+    02_energy_drift_by_bin.{png,pdf}
+    03_h1_by_bin.{png,pdf}
+    ...
 ```
 
-State channel order:
+The main number shown in plots is **position MSE**, because it maps directly to visible trajectory error. State and velocity MSE are still saved in `metrics.json` and the CSV files for deeper analysis.
+
+## Chunked Forecasting
+
+Chunked forecasting asks a practical question: if the model is periodically corrected with true observations, how large can the prediction window be?
+
+```bash
+uv run python -m evaluation.evaluate_chunked \
+  --egnn-checkpoint runs/egnn/<egnn_run_id>/best.pt \
+  --hgnn-checkpoint runs/hgnn/<hgnn_run_id>/best.pt \
+  --egnn-config configs/egnn.yaml \
+  --hgnn-config configs/hgnn.yaml \
+  --train-path data/output/train.h5 \
+  --test-path data/output/test.h5 \
+  --output-dir runs/reports/official_1k/chunked \
+  --chunks 1 3 5 10 25 \
+  --device auto
+```
+
+It writes:
 
 ```text
-[x, y, vx, vy, mass]
+chunked_summary.csv
+chunked_endpoints.csv
+chunked_report.md
+chunked_endpoint_position_mse_by_bin.{png,pdf}
 ```
 
-The training dataset converts each trajectory into consecutive supervised transitions:
+The output includes a usable-K table. A chunk size is marked as usable when median endpoint position RMSE is at most `0.5` coordinate units.
+
+## Animations
+
+Animations are generated from checkpoints and the test set. By default, the selector picks one representative trajectory per bin. For presentation use, pass a manual YAML selection:
+
+```yaml
+close: 291
+near: 389
+mid: 247
+wide: 425
+far: 218
+```
+
+Run:
+
+```bash
+uv run python -m evaluation.animate_best \
+  --egnn-checkpoint runs/egnn/<egnn_run_id>/best.pt \
+  --hgnn-checkpoint runs/hgnn/<hgnn_run_id>/best.pt \
+  --egnn-config configs/egnn.yaml \
+  --hgnn-config configs/hgnn.yaml \
+  --test-path data/output/test.h5 \
+  --output-dir runs/reports/official_1k/animations \
+  --selection-file runs/reports/official_1k/selections/manual.yaml \
+  --device auto \
+  --fps 20
+```
+
+Use `evaluation/visual_diagnostics.ipynb` to inspect trajectories and maintain the manual selection file.
+
+## Colab Evaluation Notebook
+
+For expensive evaluation/report/animation work, use:
 
 ```text
-state_t -> state_t+dt
+colab/evaluate_report_artifacts.ipynb
 ```
 
-For a file with 200 frames, each trajectory contributes 199 transitions.
+It can:
 
-## Evaluation Contract
-
-The evaluator measures:
-
-| Metric family | Question answered |
-| --- | --- |
-| Single-step state MSE | How accurate is one learned transition over `[x, y, vx, vy]`? |
-| Single-step position/velocity MSE | Which part of the transition error comes from geometry vs momentum? |
-| Minimum pairwise distance | Are errors associated with close encounters? |
-| Autoregressive rollout state MSE | What happens when predictions are fed back into the model? |
-| Autoregressive rollout position MSE | Literature-facing trajectory error, separated from velocity error. |
-| Finite-state fraction | How many rollouts remain numerically valid? |
-| State/position divergence thresholds | At which step does error cross thesis-relevant limits? |
-| Physical-energy drift | Does the predicted trajectory preserve the true conserved quantity? |
-| Learned-Hamiltonian drift | For HGNN, is the learned energy internally stable? |
-
-This split is deliberate. A model can be strong at one-step prediction and weak under rollout. Conversely, a model can sacrifice local accuracy while preserving a more stable long-horizon structure.
-
-## Colab Contract
-
-Colab entry point:
-
-```text
-colab/train_colab.ipynb
-```
-
-Notebook parameters:
-
-| Parameter | Values | Meaning |
-| --- | --- | --- |
-| `GIT_REF` | Branch or tag | Checkout target for the code running on Colab. |
-| `RUN_MODE` | `noise_sweep`, `single` | Run an EGNN noise sweep or one selected model. |
-| `MODEL` | `egnn`, `hgnn` | Select architecture. |
-| `N_TRAIN` | `1000`, `2000`, `5000`, `10000` | Select training subset size. |
-| `EPOCHS` | Integer | Training duration. |
-| `NOISE_FACTORS` | Comma-separated floats | Noise factors used when `RUN_MODE=noise_sweep`. |
-| `RUN_TRAINING` | Boolean | Train selected model. |
-| `RUN_EVALUATION` | Boolean | Evaluate selected checkpoint. |
-| `SKIP_COMPLETED` | Boolean | Skip Drive run folders that already contain `evaluation/metrics.json`. |
-
-Expected Drive input:
-
-```text
-MyDrive/masters-thesis/data/scaling/train.h5
-MyDrive/masters-thesis/data/scaling/val.h5
-MyDrive/masters-thesis/data/scaling/test.h5
-```
-
-Drive output:
-
-```text
-MyDrive/masters-thesis/runs/<model>/<run_id>/
-```
-
-The notebook validates that `train.h5` contains enough trajectories before training. This prevents a long run from silently using the wrong dataset.
-
-## Boundaries
-
-Current scope:
-
-- 2D equal-mass attractive gravitational 3-body dynamics.
-- EGNN and HGNN as the primary architecture comparison.
-- One-step supervised training.
-- Long-horizon behavior measured during evaluation through autoregressive rollout.
-- Data-scaling study over fixed training-set sizes.
-- EGNN noise-injection sweep as a stability intervention.
-
-Out of scope unless explicitly added:
-
-- General-purpose N-body simulation tooling.
-- Serving trained models behind an API.
-- Large-N astrophysical simulation.
-- Symbolic regression execution pipeline.
-- Additional baselines such as HOGN or plain Interaction Networks.
+1. verify/copy the dataset from Drive,
+2. evaluate EGNN and HGNN,
+3. evaluate the constant-velocity baseline,
+4. generate the report,
+5. optionally run chunked forecasting,
+6. optionally render animations.
 
 ## Validation
 
-Run the local validation suite:
+Run:
 
 ```bash
 uv run pytest
-```
-
-Run lint and formatting checks:
-
-```bash
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-Validation means the software contracts hold. It does not by itself prove a thesis claim. Thesis claims must be tied to preserved `metrics.json` files, generated reports, and documented experimental conditions.
-
-## References
-
-- Battaglia et al. (2016), *Interaction Networks for Learning about Objects, Relations and Physics*, NeurIPS. https://arxiv.org/abs/1612.00222
-- Greydanus et al. (2019), *Hamiltonian Neural Networks*, NeurIPS. https://arxiv.org/abs/1906.01563
-- Breen et al. (2019), *Newton vs the Machine: Solving the Chaotic Three-Body Problem Using Deep Neural Networks*, MNRAS. https://arxiv.org/abs/1910.07291
-- Sanchez-Gonzalez et al. (2019), *Hamiltonian Graph Networks with ODE Integrators*. https://arxiv.org/abs/1909.12790
-- Satorras et al. (2021), *E(n) Equivariant Graph Neural Networks*, ICML. https://arxiv.org/abs/2102.09844
-- Bishnoi et al. (2023), *Discovering Symbolic Laws Directly from Trajectories with Hamiltonian Graph Neural Networks*, ICML. https://arxiv.org/abs/2307.05299
-- Cranmer (2023), *Interpretable Machine Learning for Science with PySR and SymbolicRegression.jl*. https://arxiv.org/abs/2305.01582
-- Rein and Liu (2012), *REBOUND: An Open-Source Multi-Purpose N-Body Code*, Astronomy and Astrophysics. https://doi.org/10.1051/0004-6361/201118085
-
-Local thesis context:
-
-- `edu/presentation/main.pdf`
-- `edu/presentation/slides/09_gap.tex`
-- `edu/research/papers/egnn.md`
-- `edu/research/papers/hgnn.md`
+Passing tests means the main code paths still behave as expected. Final results should still reference the saved run folders, `metrics.json`, generated reports, and exact configs used.

@@ -21,7 +21,7 @@ from evaluation.animate_best import (
     AnimationOutputs,
     BestTrajectory,
     BestTrajectoryAnimator,
-    _per_trajectory_mean_state_mse,
+    _per_trajectory_mean_position_mse,
     _shared_axis_limits,
     render_three_panel_animation,
     select_best_trajectories,
@@ -136,7 +136,7 @@ def test_select_best_trajectories_raises_when_bin_has_no_finite_candidate() -> N
     )
 
     with pytest.raises(
-        ValueError, match="bin 'close' has no trajectories with finite mean rollout MSE"
+        ValueError, match="bin 'close' has no trajectories with finite mean rollout position MSE"
     ):
         select_best_trajectories(bundle, egnn, hgnn)
 
@@ -190,20 +190,20 @@ def test_best_trajectory_basename_is_deterministic() -> None:
         bin_name="mid",
         traj_index=42,
         d_min=0.04,
-        egnn_mean_state_mse=0.05,
-        hgnn_mean_state_mse=0.03,
+        egnn_mean_position_mse=0.05,
+        hgnn_mean_position_mse=0.03,
     )
 
     assert sel.basename == "mid_traj_42"
 
 
-def test_per_trajectory_mean_state_mse_propagates_nan_from_any_frame() -> None:
+def test_per_trajectory_mean_position_mse_propagates_nan_from_any_frame() -> None:
     """A single non-finite entry anywhere in the rollout poisons that trajectory's mean MSE."""
     truth = _states(n_traj=2)
     predicted = truth.copy()
     predicted[0, 1, 0, 0] = float("nan")  # mid-rollout NaN, not just final frame
 
-    mse = _per_trajectory_mean_state_mse(truth, predicted)
+    mse = _per_trajectory_mean_position_mse(truth, predicted)
 
     assert np.isnan(mse[0])
     assert mse[1] == 0.0
@@ -241,8 +241,8 @@ def test_render_three_panel_animation_writes_gif_and_closes_figure(tmp_path: Pat
         bin_name="close",
         traj_index=0,
         d_min=0.01,
-        egnn_mean_state_mse=0.01,
-        hgnn_mean_state_mse=0.04,
+        egnn_mean_position_mse=0.01,
+        hgnn_mean_position_mse=0.04,
     )
     plt.close("all")
     initial = len(plt.get_fignums())
@@ -271,8 +271,8 @@ def test_render_three_panel_animation_rejects_non_positive_fps(tmp_path: Path) -
         bin_name="close",
         traj_index=0,
         d_min=0.01,
-        egnn_mean_state_mse=0.0,
-        hgnn_mean_state_mse=0.0,
+        egnn_mean_position_mse=0.0,
+        hgnn_mean_position_mse=0.0,
     )
 
     with pytest.raises(ValueError, match="fps must be >= 1"):
@@ -395,8 +395,8 @@ def test_select_trajectories_from_file_returns_requested_indices_in_bin_order(
     assert [s.traj_index for s in selections] == [0, 3, 4]
     # Numeric fields are populated, mirroring the automatic selector.
     assert selections[0].d_min == bundle.min_pairwise_distance[0]
-    assert np.isfinite(selections[0].egnn_mean_state_mse)
-    assert np.isfinite(selections[0].hgnn_mean_state_mse)
+    assert np.isfinite(selections[0].egnn_mean_position_mse)
+    assert np.isfinite(selections[0].hgnn_mean_position_mse)
 
 
 def test_select_trajectories_from_file_rejects_missing_bin(tmp_path: Path) -> None:
@@ -443,7 +443,7 @@ def test_select_trajectories_from_file_rejects_non_finite_prediction(tmp_path: P
     egnn[0, 1, 0, 0] = float("nan")
     selection_path = _write_selection_yaml(tmp_path, {"close": 0, "mid": 3, "far": 4})
 
-    with pytest.raises(ValueError, match="non-finite mean rollout MSE for EGNN"):
+    with pytest.raises(ValueError, match="non-finite mean rollout position MSE for EGNN"):
         select_trajectories_from_file(bundle, egnn, hgnn, selection_path)
 
 

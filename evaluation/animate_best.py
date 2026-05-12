@@ -3,8 +3,10 @@
 Renders one 3-panel MP4 + GIF per encounter bin: ground truth on the left,
 EGNN prediction in the middle, HGNN prediction on the right. The "best"
 trajectory in each bin is the one with the lowest joint mean rollout
-state MSE across the two models, picked over the same set of trajectories
-so the visual comparison is fair.
+position MSE across the two models, picked over the same set of trajectories
+so the visual comparison is fair. Position MSE matches the audience-facing
+metric used by `evaluation.report` and `evaluation/visual_diagnostics.ipynb`,
+so the slide narrative stays coherent end to end.
 
 This module is intentionally separate from `evaluation/report.py` because
 it must load both trained checkpoints and run full autoregressive rollouts;
@@ -49,18 +51,19 @@ _AXIS_PADDING = 0.5
 class BestTrajectory:
     """One per-bin selection chosen for animation.
 
-    `egnn_mean_state_mse` / `hgnn_mean_state_mse` are the per-trajectory
-    rollout-averaged state MSE values used as the selection signal; they
+    `egnn_mean_position_mse` / `hgnn_mean_position_mse` are the per-trajectory
+    rollout-averaged position MSE values used as the selection signal; they
     are stored on the dataclass so the supertitle and downstream manifests
-    can surface the criterion used to pick this trajectory.
+    can surface the criterion used to pick this trajectory. Position MSE
+    matches the audience-facing metric used by `evaluation.report`.
     """
 
     bin_id: int
     bin_name: str
     traj_index: int
     d_min: float
-    egnn_mean_state_mse: float
-    hgnn_mean_state_mse: float
+    egnn_mean_position_mse: float
+    hgnn_mean_position_mse: float
 
     @property
     def basename(self) -> str:
@@ -82,19 +85,21 @@ def select_best_trajectories(
     egnn_predicted: npt.NDArray[np.floating],
     hgnn_predicted: npt.NDArray[np.floating],
 ) -> list[BestTrajectory]:
-    """Return the trajectory with the lowest joint mean rollout MSE in each bin.
+    """Return the trajectory with the lowest joint mean rollout position MSE in each bin.
 
     Selection criterion: for each trajectory `i`, compute the mean
-    state-MSE over the full rollout (averaged across frames, particles,
-    and the four state components) for both models. The "joint" score is
-    `mean_mse_egnn[i] + mean_mse_hgnn[i]`; the winning trajectory in each
-    encounter bin minimises that joint score. Averaging over the full
-    rollout (instead of only the final frame) picks trajectories that
-    look good throughout the video, not just at the end.
+    position MSE over the full rollout (averaged across frames, particles,
+    and the two position components x and y) for both models. The "joint"
+    score is `mean_position_mse_egnn[i] + mean_position_mse_hgnn[i]`; the
+    winning trajectory in each encounter bin minimises that joint score.
+    Averaging over the full rollout (instead of only the final frame)
+    picks trajectories that look good throughout the video, not just at
+    the end. Position MSE (not state MSE) is the selector because that is
+    the audience-facing forecast metric in the rest of the report.
 
-    A trajectory is eligible iff both its per-model mean MSE values are
-    finite; bins with no eligible candidate raise `ValueError` since the
-    caller asked for one selection per bin.
+    A trajectory is eligible iff both its per-model mean position MSE
+    values are finite; bins with no eligible candidate raise `ValueError`
+    since the caller asked for one selection per bin.
 
     Both predicted arrays must have the same shape as `test_bundle.states`;
     a mismatch is rejected up front before any MSE arithmetic so a wrong
@@ -106,8 +111,8 @@ def select_best_trajectories(
     assert test_bundle.encounter_bin_id is not None
     assert test_bundle.min_pairwise_distance is not None
 
-    egnn_mean_mse = _per_trajectory_mean_state_mse(test_bundle.states, egnn_predicted)
-    hgnn_mean_mse = _per_trajectory_mean_state_mse(test_bundle.states, hgnn_predicted)
+    egnn_mean_mse = _per_trajectory_mean_position_mse(test_bundle.states, egnn_predicted)
+    hgnn_mean_mse = _per_trajectory_mean_position_mse(test_bundle.states, hgnn_predicted)
     joint = egnn_mean_mse + hgnn_mean_mse
     finite = np.isfinite(egnn_mean_mse) & np.isfinite(hgnn_mean_mse)
 
@@ -117,7 +122,7 @@ def select_best_trajectories(
         eligible = bin_mask & finite
         if not eligible.any():
             msg = (
-                f"bin {bin_def.name!r} has no trajectories with finite mean rollout MSE "
+                f"bin {bin_def.name!r} has no trajectories with finite mean rollout position MSE "
                 "for both models; cannot select a representative animation"
             )
             raise ValueError(msg)
@@ -129,8 +134,8 @@ def select_best_trajectories(
                 bin_name=bin_def.name,
                 traj_index=winner,
                 d_min=float(test_bundle.min_pairwise_distance[winner]),
-                egnn_mean_state_mse=float(egnn_mean_mse[winner]),
-                hgnn_mean_state_mse=float(hgnn_mean_mse[winner]),
+                egnn_mean_position_mse=float(egnn_mean_mse[winner]),
+                hgnn_mean_position_mse=float(hgnn_mean_mse[winner]),
             )
         )
     return selections
@@ -148,7 +153,7 @@ def select_trajectories_from_file(
     notebook. Validation is strict: every bin in the test set must appear
     exactly once; no unknown bin names; every index must be in range and
     actually live in its declared bin; both EGNN and HGNN must produce a
-    finite mean rollout MSE on that index. Returned selections are in
+    finite mean rollout position MSE on that index. Returned selections are in
     canonical encounter-bin order so downstream code can iterate them the
     same way as the automatic selector's output.
 
@@ -170,8 +175,8 @@ def select_trajectories_from_file(
     bin_names = [b.name for b in bins]
     _require_complete_bin_coverage(raw, bin_names, selection_path)
 
-    egnn_mse = _per_trajectory_mean_state_mse(test_bundle.states, egnn_predicted)
-    hgnn_mse = _per_trajectory_mean_state_mse(test_bundle.states, hgnn_predicted)
+    egnn_mse = _per_trajectory_mean_position_mse(test_bundle.states, egnn_predicted)
+    hgnn_mse = _per_trajectory_mean_position_mse(test_bundle.states, hgnn_predicted)
     n_traj = test_bundle.states.shape[0]
 
     selections: list[BestTrajectory] = []
@@ -186,8 +191,8 @@ def select_trajectories_from_file(
                 bin_name=bin_def.name,
                 traj_index=idx,
                 d_min=float(test_bundle.min_pairwise_distance[idx]),
-                egnn_mean_state_mse=float(egnn_mse[idx]),
-                hgnn_mean_state_mse=float(hgnn_mse[idx]),
+                egnn_mean_position_mse=float(egnn_mse[idx]),
+                hgnn_mean_position_mse=float(hgnn_mse[idx]),
             )
         )
     return selections
@@ -393,12 +398,12 @@ def _require_stratified_bundle(test_bundle: Trajectories) -> None:
         raise ValueError(msg)
 
 
-def _per_trajectory_mean_state_mse(
+def _per_trajectory_mean_position_mse(
     test_traj: npt.NDArray[np.floating],
     predicted: npt.NDArray[np.floating],
 ) -> npt.NDArray[np.floating]:
-    """Rollout-averaged state MSE per trajectory, used as the selection signal."""
-    diff = predicted[..., :4] - test_traj[..., :4]
+    """Rollout-averaged position MSE per trajectory, used as the selection signal."""
+    diff = predicted[..., :2] - test_traj[..., :2]
     # NaN/inf propagates: a single non-finite step poisons the trajectory's mean,
     # which is what the selector uses to discard divergent rollouts.
     return (diff**2).mean(axis=(1, 2, 3))
@@ -511,7 +516,7 @@ def _require_finite_predictions(
     if not (egnn_ok and hgnn_ok):
         missing_models = [name for name, ok in (("EGNN", egnn_ok), ("HGNN", hgnn_ok)) if not ok]
         msg = (
-            f"trajectory {idx} in bin {bin_name!r} has non-finite mean rollout MSE for "
+            f"trajectory {idx} in bin {bin_name!r} has non-finite mean rollout position MSE for "
             f"{', '.join(missing_models)}; manual selection cannot use it"
         )
         raise ValueError(msg)
@@ -568,12 +573,12 @@ def _particle_color(index: int) -> str:
 
 
 def _supertitle(selection: BestTrajectory) -> str:
-    """Compact one-line title with bin, trajectory index, d_min, and mean rollout MSE."""
+    """Compact one-line title with bin, trajectory index, d_min, and mean rollout position MSE."""
     return (
         f"bin={selection.bin_name} | trajectory {selection.traj_index} | "
         f"d_min={selection.d_min:.4g} | "
-        f"EGNN mean MSE={selection.egnn_mean_state_mse:.4g} | "
-        f"HGNN mean MSE={selection.hgnn_mean_state_mse:.4g}"
+        f"EGNN mean position MSE={selection.egnn_mean_position_mse:.4g} | "
+        f"HGNN mean position MSE={selection.hgnn_mean_position_mse:.4g}"
     )
 
 

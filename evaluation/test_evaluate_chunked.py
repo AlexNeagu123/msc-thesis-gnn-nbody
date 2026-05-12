@@ -19,10 +19,14 @@ from data._types import EncounterBin, Trajectories
 from evaluation.evaluate_chunked import (
     ENDPOINTS_COLUMNS,
     SUMMARY_COLUMNS,
+    USABLE_K_POSITION_MSE_THRESHOLD,
+    ChunkedEndpointsRow,
     ChunkedEvaluator,
     aggregate_endpoints,
     aggregate_summary,
     chunk_endpoint_frames,
+    largest_usable_k,
+    read_endpoint_rows,
     run_chunked_rollout,
 )
 from evaluation.metrics import rollout
@@ -222,6 +226,113 @@ def test_aggregate_endpoints_reads_chunk_tail_frames() -> None:
     # Per-frame state MSE = mean over (particles, [x, y, vx, vy]) of squared diff.
     # With positions shifted by 1.0 and velocities clean, that is (1+1+0+0)/4 = 0.5.
     assert out["median_end_state_mse"] == pytest.approx(0.5)
+    # Position-only MSE averages over (x, y) only: (1 + 1) / 2 = 1.0.
+    assert out["median_end_position_mse"] == pytest.approx(1.0)
+    # Velocities never shifted, so endpoint velocity MSE is exactly zero.
+    assert out["median_end_velocity_mse"] == pytest.approx(0.0)
+
+
+def test_aggregate_endpoints_returns_full_none_block_for_empty_bin() -> None:
+    """All seven endpoint fields are None when the mask is all False."""
+    truth = _toy_trajectories(n_traj=2, n_frames=5)
+    predicted = truth.copy()
+    mask = np.zeros(2, dtype=bool)
+
+    out = aggregate_endpoints(truth, predicted, mask, chunk_size=2)
+
+    assert out == {
+        "median_end_state_mse": None,
+        "p95_end_state_mse": None,
+        "finite_fraction": None,
+        "median_end_position_mse": None,
+        "p95_end_position_mse": None,
+        "median_end_velocity_mse": None,
+        "p95_end_velocity_mse": None,
+    }
+
+
+def _make_endpoint_row(
+    *,
+    chunk_size: int,
+    bin_name: str,
+    model: str,
+    median_end_position_mse: float | None,
+) -> ChunkedEndpointsRow:
+    """Build a minimal endpoint row pinned to one position-MSE value, defaults elsewhere."""
+    return ChunkedEndpointsRow(
+        chunk_size=chunk_size,
+        bin=bin_name,
+        model=model,
+        median_end_state_mse=None,
+        p95_end_state_mse=None,
+        finite_fraction=None,
+        median_end_position_mse=median_end_position_mse,
+        p95_end_position_mse=None,
+        median_end_velocity_mse=None,
+        p95_end_velocity_mse=None,
+    )
+
+
+def test_largest_usable_k_picks_largest_qualifying_chunk_size() -> None:
+    """For each (bin, model), the largest K with median position MSE <= threshold wins."""
+    rows = [
+        _make_endpoint_row(
+            chunk_size=1, bin_name="close", model="egnn", median_end_position_mse=0.05
+        ),
+        _make_endpoint_row(
+            chunk_size=3, bin_name="close", model="egnn", median_end_position_mse=0.10
+        ),
+        _make_endpoint_row(
+            chunk_size=10, bin_name="close", model="egnn", median_end_position_mse=0.20
+        ),
+        _make_endpoint_row(
+            chunk_size=25, bin_name="close", model="egnn", median_end_position_mse=0.40
+        ),
+    ]
+
+    usable = largest_usable_k(rows)
+
+    assert usable[("close", "egnn")] == 10
+
+
+def test_largest_usable_k_returns_none_when_no_k_qualifies() -> None:
+    """No qualifying K -> the cell is `None`, which the markdown renders as 'none'."""
+    rows = [
+        _make_endpoint_row(
+            chunk_size=1, bin_name="far", model="hgnn", median_end_position_mse=0.40
+        ),
+        _make_endpoint_row(
+            chunk_size=3, bin_name="far", model="hgnn", median_end_position_mse=0.50
+        ),
+    ]
+
+    usable = largest_usable_k(rows)
+
+    assert usable[("far", "hgnn")] is None
+
+
+def test_largest_usable_k_treats_none_and_non_finite_as_failures() -> None:
+    """Missing or non-finite position MSE values never count as usable."""
+    rows = [
+        _make_endpoint_row(
+            chunk_size=1, bin_name="mid", model="egnn", median_end_position_mse=None
+        ),
+        _make_endpoint_row(
+            chunk_size=3, bin_name="mid", model="egnn", median_end_position_mse=float("nan")
+        ),
+        _make_endpoint_row(
+            chunk_size=5, bin_name="mid", model="egnn", median_end_position_mse=0.10
+        ),
+    ]
+
+    usable = largest_usable_k(rows)
+
+    assert usable[("mid", "egnn")] == 5
+
+
+def test_largest_usable_k_threshold_is_locked_at_quarter() -> None:
+    """The default threshold is the locked 0.25 (median endpoint position MSE)."""
+    assert USABLE_K_POSITION_MSE_THRESHOLD == 0.25
 
 
 class _StubEvaluator(ChunkedEvaluator):
@@ -302,9 +413,19 @@ def test_chunked_evaluator_writes_csvs_and_markdown(tmp_path: Path) -> None:
     assert "test_path" in md
     assert "train_path" in md
     assert "not used for the chunked constant-velocity baseline" in md
+    # Usable-K section and headline endpoint section both live in the markdown.
+    assert "## Usable K per bin and model" in md
+    assert "median endpoint position RMSE" in md
+    assert "median endpoint position MSE <= 0.25" in md
+    assert "## Chunk-endpoint position MSE" in md
+    # Disclaimer is rendered as a bold blockquote so it is impossible to miss.
+    assert "> **This is not autonomous simulation." in md
 
-    # at least one figure file was produced
+    # at least one figure file was produced, and the headline figure has the locked name
     assert any(p.is_file() and p.stat().st_size > 0 for p in run.figure_paths)
+    figure_stems = {p.stem for p in run.figure_paths}
+    assert "chunked_endpoint_position_mse_by_bin" in figure_stems
+    assert "chunked_state_mse_by_bin" not in figure_stems
 
 
 def test_chunked_evaluator_smaller_k_has_smaller_median_for_compounding_model(
@@ -367,3 +488,72 @@ def test_chunked_evaluator_rejects_empty_chunks(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="chunks must be non-empty"):
         evaluator.run()
+
+
+def test_read_endpoint_rows_round_trips_full_schema(tmp_path: Path) -> None:
+    """A CSV produced by the evaluator round-trips through the reader."""
+    truth = _toy_trajectories(n_traj=2, n_frames=4)
+    bundle = _bundle_for(truth, bin_ids=[0, 1])
+    evaluator = _StubEvaluator(
+        bundle=bundle,
+        models={
+            "egnn": _ShiftModel(delta=0.1),
+            "hgnn": _ShiftModel(delta=0.1),
+            "baseline_constant_velocity": _ShiftModel(delta=0.2),
+        },
+        output_dir=tmp_path,
+        chunks=(1,),
+    )
+
+    run = evaluator.run()
+    loaded = read_endpoint_rows(run.endpoints_csv)
+
+    assert len(loaded) == len(run.endpoint_rows)
+    for produced, parsed in zip(run.endpoint_rows, loaded, strict=True):
+        assert parsed.chunk_size == produced.chunk_size
+        assert parsed.bin == produced.bin
+        assert parsed.model == produced.model
+        assert parsed.median_end_position_mse == pytest.approx(produced.median_end_position_mse)
+
+
+def test_read_endpoint_rows_rejects_legacy_six_column_header(tmp_path: Path) -> None:
+    """An old CSV without position / velocity columns must fail loud, not silently load Nones."""
+    legacy_path = tmp_path / "legacy_chunked_endpoints.csv"
+    legacy_path.write_text(
+        "chunk_size,bin,model,median_end_state_mse,p95_end_state_mse,finite_fraction\n"
+        "1,close,egnn,0.01,0.02,1.0\n"
+    )
+
+    with pytest.raises(ValueError, match="incompatible header"):
+        read_endpoint_rows(legacy_path)
+
+
+def test_chunked_evaluator_clears_stale_chunked_figures(tmp_path: Path) -> None:
+    """A re-run wipes pre-existing chunked_*.png/pdf so the directory only carries current artifacts."""
+    truth = _toy_trajectories(n_traj=2, n_frames=4)
+    bundle = _bundle_for(truth, bin_ids=[0, 1])
+    evaluator = _StubEvaluator(
+        bundle=bundle,
+        models={
+            "egnn": _ShiftModel(),
+            "hgnn": _ShiftModel(),
+            "baseline_constant_velocity": _ShiftModel(),
+        },
+        output_dir=tmp_path,
+    )
+    # seed the output dir with a pre-existing "old" figure that the new run must drop
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stale_png = tmp_path / "chunked_state_mse_by_bin.png"
+    stale_pdf = tmp_path / "chunked_state_mse_by_bin.pdf"
+    stale_png.write_bytes(b"PNG-STUB")
+    stale_pdf.write_bytes(b"PDF-STUB")
+    # a non-chunked file in the same dir must survive the cleanup
+    untouched = tmp_path / "unrelated.png"
+    untouched.write_bytes(b"keep-me")
+
+    evaluator.run()
+
+    assert not stale_png.exists()
+    assert not stale_pdf.exists()
+    assert untouched.is_file()
+    assert (tmp_path / "chunked_endpoint_position_mse_by_bin.png").is_file()

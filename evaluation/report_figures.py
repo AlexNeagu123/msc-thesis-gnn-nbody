@@ -1,10 +1,15 @@
 """Presentation-grade figures for the comparison report.
 
 Public plotters cover continuous dynamics and fixed-horizon snapshots
-for the two physical metrics:
-    - `plot_rollout_mse_presentation`        : MSE curve per bin
+for the two audience-facing physical metrics:
+    - `plot_rollout_mse_presentation`        : position MSE curve per bin
     - `plot_energy_drift_presentation`       : |dE/E_0| curve per bin
-    - `plot_horizon_snapshot_by_bin`         : MSE + energy bars at one horizon
+    - `plot_horizon_snapshot_by_bin`         : position MSE + energy bars at one horizon
+
+Position MSE is the headline forecast-quality metric because it maps
+directly to trajectory accuracy on the coordinate plane. State and
+velocity MSE remain available in `metrics.json` / technical CSVs but
+are not surfaced in figures.
 
 Each plotter accepts three typed `EvaluationReport`s (EGNN, HGNN,
 constant-velocity baseline). Matplotlib owns rendering and PDF export.
@@ -32,7 +37,7 @@ from evaluation.report_tables import _require_bins
 class _HorizonMetric(Enum):
     """Which per-bin curve a horizon panel reads from."""
 
-    STATE_MSE = "state_mse"
+    POSITION_MSE = "position_mse"
     ENERGY_DRIFT = "energy_drift"
 
 
@@ -82,7 +87,7 @@ def plot_rollout_mse_presentation(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Headline rollout figure: median state MSE vs step, per encounter bin.
+    """Headline rollout figure: median position MSE vs step, per encounter bin.
 
     2x3 grid of panels. Each panel carries three curves (EGNN, HGNN,
     constant-velocity baseline) on a log y-axis with linear x. The bottom-
@@ -107,7 +112,7 @@ def plot_rollout_mse_presentation(
 
     _render_legend_panel(axes[n_bins])
     _hide_unused_panels(axes, used=n_bins + 1)
-    _suptitle_with_padding(fig, "Rollout MSE by encounter bin")
+    _suptitle_with_padding(fig, "Rollout position MSE by encounter bin")
     _save_and_close(fig, output_paths)
 
 
@@ -152,13 +157,13 @@ def plot_final_mse_by_bin(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Final-step comparison figure: median state MSE as grouped bars per bin."""
+    """Final-step comparison figure: median position MSE as grouped bars per bin."""
     _plot_metric_bars_at_step(
         egnn,
         hgnn,
         baseline,
         output_paths,
-        metric=_HorizonMetric.STATE_MSE,
+        metric=_HorizonMetric.POSITION_MSE,
         step=None,
     )
 
@@ -188,13 +193,13 @@ def plot_mse_bars_at_horizon(
     *,
     horizon: int,
 ) -> None:
-    """Grouped MSE bars by encounter bin at a selected rollout horizon."""
+    """Grouped position MSE bars by encounter bin at a selected rollout horizon."""
     _plot_metric_bars_at_step(
         egnn,
         hgnn,
         baseline,
         output_paths,
-        metric=_HorizonMetric.STATE_MSE,
+        metric=_HorizonMetric.POSITION_MSE,
         step=horizon,
     )
 
@@ -223,7 +228,7 @@ def plot_horizon_snapshot_by_bin(
             egnn_bin,
             hgnn_bin,
             baseline_bin,
-            metric=_HorizonMetric.STATE_MSE,
+            metric=_HorizonMetric.POSITION_MSE,
             step=horizon,
             label=name,
         )
@@ -239,7 +244,7 @@ def plot_horizon_snapshot_by_bin(
         _render_horizon_snapshot_panel(
             axes[row, 0],
             mse_values,
-            metric=_HorizonMetric.STATE_MSE,
+            metric=_HorizonMetric.POSITION_MSE,
             row_label=_bin_label(name, count),
         )
         _render_horizon_snapshot_panel(
@@ -249,7 +254,7 @@ def plot_horizon_snapshot_by_bin(
             row_label=None,
         )
 
-    axes[0, 0].set_title("median state MSE")
+    axes[0, 0].set_title("median position MSE")
     axes[0, 1].set_title(r"median $|\Delta E / E_0|$")
     fig.legend(
         handles=_model_legend_handles(include_markers=True),
@@ -272,7 +277,7 @@ def plot_horizon_mse_by_bin(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Headline horizon-MSE figure: exact median state MSE at fixed horizons.
+    """Headline horizon-MSE figure: exact median position MSE at fixed horizons.
 
     Rows are encounter bins; columns are models. Splitting models into
     columns gives each marker enough room for its numeric label while
@@ -283,8 +288,8 @@ def plot_horizon_mse_by_bin(
         hgnn,
         baseline,
         output_paths,
-        metric=_HorizonMetric.STATE_MSE,
-        title="Rollout MSE at fixed horizons by encounter bin",
+        metric=_HorizonMetric.POSITION_MSE,
+        title="Rollout position MSE at fixed horizons by encounter bin",
     )
 
 
@@ -422,9 +427,9 @@ def _metric_value_at_step(
     label: str,
 ) -> float:
     """Return the median value for one bin and metric at `step` or final step."""
-    if metric is _HorizonMetric.STATE_MSE:
+    if metric is _HorizonMetric.POSITION_MSE:
         steps = list(bin_report.rollout.curves.step)
-        values = list(bin_report.rollout.curves.state_mse.median)
+        values = list(bin_report.rollout.curves.position_mse.median)
     else:
         steps = list(bin_report.energy.physical.curves.step)
         values = list(bin_report.energy.physical.curves.median)
@@ -436,8 +441,8 @@ def _metric_value_at_step(
 def _metric_bar_title(metric: _HorizonMetric, *, step: int | None) -> str:
     """Human-readable title for grouped metric bar charts."""
     prefix = "Final-step" if step is None else f"Rollout step {step}"
-    if metric is _HorizonMetric.STATE_MSE:
-        return f"{prefix} median state MSE by encounter bin"
+    if metric is _HorizonMetric.POSITION_MSE:
+        return f"{prefix} median position MSE by encounter bin"
     return f"{prefix} relative energy drift by encounter bin"
 
 
@@ -682,9 +687,9 @@ def _render_mse_panel(
     the figure does not repeat the same label five times.
     """
     steps = np.asarray(egnn_bin.rollout.curves.step, dtype=int)
-    egnn_curve = _curve_to_array(egnn_bin.rollout.curves.state_mse.median)
-    hgnn_curve = _curve_to_array(hgnn_bin.rollout.curves.state_mse.median)
-    baseline_curve = _curve_to_array(baseline_bin.rollout.curves.state_mse.median)
+    egnn_curve = _curve_to_array(egnn_bin.rollout.curves.position_mse.median)
+    hgnn_curve = _curve_to_array(hgnn_bin.rollout.curves.position_mse.median)
+    baseline_curve = _curve_to_array(baseline_bin.rollout.curves.position_mse.median)
 
     ax.plot(steps[1:], egnn_curve[1:], color=EGNN_COLOR, linewidth=2.2, label="EGNN")
     ax.plot(steps[1:], hgnn_curve[1:], color=HGNN_COLOR, linewidth=2.2, label="HGNN")
@@ -701,7 +706,7 @@ def _render_mse_panel(
     _apply_outer_labels(
         ax,
         x_label="rollout step",
-        y_label="median state MSE",
+        y_label="median position MSE",
         is_leftmost=is_leftmost,
         is_bottom=is_bottom,
     )
@@ -861,7 +866,7 @@ def _render_horizon_panel(
         markersize=6,
         label="constant velocity",
     )
-    if metric is _HorizonMetric.STATE_MSE:
+    if metric is _HorizonMetric.POSITION_MSE:
         _annotate_horizon_values(ax, x, egnn_y, color=EGNN_COLOR, y_offset=8, va="bottom")
         _annotate_horizon_values(ax, x, hgnn_y, color=HGNN_COLOR, y_offset=18, va="bottom")
         _annotate_horizon_values(
@@ -903,7 +908,7 @@ def _horizon_metric_y_label(metric: _HorizonMetric) -> str:
     """Figure-level y label for the model-column horizon grids."""
     if metric is _HorizonMetric.ENERGY_DRIFT:
         return r"median $|\Delta E / E_0|$"
-    return "median state MSE"
+    return "median position MSE"
 
 
 def _pad_horizon_panel_y_limits(
@@ -986,9 +991,9 @@ def _horizon_values(
     interpolating. None entries become NaN so matplotlib can render the
     gap.
     """
-    if metric is _HorizonMetric.STATE_MSE:
+    if metric is _HorizonMetric.POSITION_MSE:
         step = list(bin_report.rollout.curves.step)
-        median = list(bin_report.rollout.curves.state_mse.median)
+        median = list(bin_report.rollout.curves.position_mse.median)
     else:
         step = list(bin_report.energy.physical.curves.step)
         median = list(bin_report.energy.physical.curves.median)

@@ -21,6 +21,10 @@ import json
 from pathlib import Path
 
 from evaluation._types import EncounterBinReport, EncounterBinsReport, EvaluationReport
+from evaluation.evaluate_chunked import (
+    largest_usable_k,
+    read_endpoint_rows,
+)
 from evaluation.report_figures import (
     HORIZON_ANCHORS,
     plot_energy_drift_presentation,
@@ -28,6 +32,11 @@ from evaluation.report_figures import (
     plot_rollout_mse_presentation,
 )
 from evaluation.report_tables import (
+    CHUNKED_ENDPOINTS_CSV_NAME,
+    CHUNKED_FIGURE_NAME,
+    CHUNKED_MARKDOWN_NAME,
+    CHUNKED_SUMMARY_CSV_NAME,
+    ChunkedReportSection,
     write_key_timestep_summary_csv,
     write_per_bin_summary_csv,
     write_report_markdown,
@@ -78,6 +87,7 @@ class Reporter:
 
         tables = self._write_tables(egnn, hgnn, baseline)
         figures = self._write_figures(egnn, hgnn, baseline)
+        chunked = self._load_chunked_section()
         write_report_markdown(
             egnn,
             hgnn,
@@ -85,12 +95,14 @@ class Reporter:
             self.output_dir,
             figures=figures,
             tables=tables,
+            chunked=chunked,
         )
         logger.info(
-            "wrote %d figures, %d tables, and report.md to %s",
+            "wrote %d figures, %d tables, and report.md to %s (chunked: %s)",
             len(figures),
             len(tables),
             self.output_dir,
+            "yes" if chunked is not None else "no",
         )
 
     def _write_tables(
@@ -114,8 +126,8 @@ class Reporter:
     ) -> list[str]:
         """Render every presentation figure, returning the artifact basenames."""
         self._clear_figure_artifacts()
-        rollout_png = self.figures_dir / "01_rollout_mse_by_bin.png"
-        rollout_pdf = self.figures_dir / "01_rollout_mse_by_bin.pdf"
+        rollout_png = self.figures_dir / "01_rollout_position_mse_by_bin.png"
+        rollout_pdf = self.figures_dir / "01_rollout_position_mse_by_bin.pdf"
         plot_rollout_mse_presentation(egnn, hgnn, baseline, (rollout_png, rollout_pdf))
 
         drift_png = self.figures_dir / "02_energy_drift_by_bin.png"
@@ -397,6 +409,43 @@ class Reporter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.figures_dir.mkdir(exist_ok=True)
         self.tables_dir.mkdir(exist_ok=True)
+
+    def _load_chunked_section(self) -> ChunkedReportSection | None:
+        """Detect `<output_dir>/chunked/`; build the report-md section if the full manifest is present.
+
+        The chunked sub-directory is optional. We attach the section only
+        when every artifact the section links to is present, so the main
+        report never points at a stale or missing chunked figure / CSV /
+        markdown. A partial manifest logs a warning and falls back to a
+        report without the section. A present-but-malformed endpoints CSV
+        causes `read_endpoint_rows` to raise so we fail loudly instead of
+        emitting a hollow section.
+        """
+        chunked_dir = self.output_dir / "chunked"
+        required = {
+            CHUNKED_ENDPOINTS_CSV_NAME: chunked_dir / CHUNKED_ENDPOINTS_CSV_NAME,
+            CHUNKED_SUMMARY_CSV_NAME: chunked_dir / CHUNKED_SUMMARY_CSV_NAME,
+            CHUNKED_FIGURE_NAME: chunked_dir / CHUNKED_FIGURE_NAME,
+            CHUNKED_MARKDOWN_NAME: chunked_dir / CHUNKED_MARKDOWN_NAME,
+        }
+        missing = [name for name, path in required.items() if not path.is_file()]
+        if len(missing) == len(required):
+            return None
+        if missing:
+            logger.warning(
+                "chunked sub-directory is partial; skipping the report.md section. "
+                "Missing files under %s: %s. Re-run `python -m evaluation.evaluate_chunked` "
+                "to regenerate the full manifest.",
+                chunked_dir,
+                missing,
+            )
+            return None
+        rows = read_endpoint_rows(required[CHUNKED_ENDPOINTS_CSV_NAME])
+        return ChunkedReportSection(
+            rel_dir="chunked",
+            endpoint_rows=rows,
+            usable_k=largest_usable_k(rows),
+        )
 
 
 def _load_report(path: Path) -> EvaluationReport:

@@ -113,7 +113,7 @@ def test_run_writes_horizon_bar_figure_files(tmp_path: Path) -> None:
     assert len(png_files) == 11, [p.name for p in png_files]
     assert len(pdf_files) == 11, [p.name for p in pdf_files]
     expected_stems = {
-        "01_rollout_mse_by_bin",
+        "01_rollout_position_mse_by_bin",
         "02_energy_drift_by_bin",
         "03_h1_by_bin",
         "04_h3_by_bin",
@@ -392,6 +392,114 @@ def test_setup_output_is_idempotent(tmp_path: Path) -> None:
 
     assert reporter.figures_dir.is_dir()
     assert reporter.tables_dir.is_dir()
+
+
+_CHUNKED_ENDPOINTS_CSV_FIXTURE = (
+    "chunk_size,bin,model,median_end_state_mse,p95_end_state_mse,finite_fraction,"
+    "median_end_position_mse,p95_end_position_mse,median_end_velocity_mse,p95_end_velocity_mse\n"
+    "1,extreme,egnn,0.01,0.02,1.0,0.005,0.009,0.015,0.02\n"
+    "1,extreme,hgnn,0.01,0.02,1.0,0.04,0.09,0.015,0.02\n"
+    "1,extreme,baseline_constant_velocity,0.5,0.6,1.0,0.5,0.6,0.5,0.6\n"
+    "3,extreme,egnn,0.03,0.05,1.0,0.10,0.15,0.04,0.06\n"
+    "3,extreme,hgnn,0.03,0.05,1.0,0.30,0.40,0.04,0.06\n"
+    "3,extreme,baseline_constant_velocity,1.0,1.2,1.0,1.0,1.2,1.0,1.2\n"
+    "1,close,egnn,0.01,0.02,1.0,0.20,0.25,0.015,0.02\n"
+    "1,close,hgnn,0.01,0.02,1.0,0.50,0.55,0.015,0.02\n"
+    "1,close,baseline_constant_velocity,0.5,0.6,1.0,0.5,0.6,0.5,0.6\n"
+    "1,smooth,egnn,0.01,0.02,1.0,0.005,0.009,0.015,0.02\n"
+    "1,smooth,hgnn,0.01,0.02,1.0,0.01,0.02,0.015,0.02\n"
+    "1,smooth,baseline_constant_velocity,0.5,0.6,1.0,0.5,0.6,0.5,0.6\n"
+)
+
+
+def _seed_chunked_dir(reporter: Reporter) -> Path:
+    """Drop a minimal chunked sub-directory under the reporter's output dir."""
+    chunked_dir = reporter.output_dir / "chunked"
+    chunked_dir.mkdir(parents=True, exist_ok=True)
+    (chunked_dir / "chunked_endpoints.csv").write_text(_CHUNKED_ENDPOINTS_CSV_FIXTURE)
+    # only the CSV is required for the section; create empty siblings so the markdown
+    # links to existing files (a stricter check than relying on the loader alone).
+    (chunked_dir / "chunked_summary.csv").write_text("")
+    (chunked_dir / "chunked_report.md").write_text("")
+    (chunked_dir / "chunked_endpoint_position_mse_by_bin.png").write_bytes(b"PNG")
+    return chunked_dir
+
+
+def test_run_omits_chunked_section_when_chunked_dir_absent(tmp_path: Path) -> None:
+    """No chunked/ -> report.md must not advertise the short-horizon section."""
+    reporter = _build_reporter(tmp_path)
+
+    reporter.run()
+
+    md = (reporter.output_dir / "report.md").read_text()
+    assert "Short-horizon corrected forecasting" not in md
+    assert "chunked/" not in md
+
+
+def test_run_emits_chunked_section_when_chunked_dir_present(tmp_path: Path) -> None:
+    """A chunked sub-directory wires the short-horizon section into report.md."""
+    reporter = _build_reporter(tmp_path)
+    # Reporter._setup_output() will create output_dir; seed chunked AFTER setup so the
+    # directory exists when _load_chunked_section runs. Easiest path: ensure the parent
+    # exists, then drop chunked/ before invoking run().
+    reporter.output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_chunked_dir(reporter)
+
+    reporter.run()
+
+    md = (reporter.output_dir / "report.md").read_text()
+    assert "## Short-horizon corrected forecasting" in md
+    assert "**This is not autonomous simulation.**" in md
+    assert "median endpoint position MSE <= 0.25" in md
+    assert "### Largest usable K per bin and model" in md
+    # extreme bin: EGNN k=1 (0.005) and k=3 (0.10) both qualify -> largest is K=3.
+    # HGNN k=1 (0.04) qualifies, k=3 (0.30) does not -> largest is K=1.
+    # baseline never qualifies -> none.
+    assert "| extreme | K=3 | K=1 | none |" in md
+    # smooth: only K=1 evaluated; EGNN+HGNN both qualify, baseline does not.
+    assert "| smooth | K=1 | K=1 | none |" in md
+    assert "chunked/chunked_endpoint_position_mse_by_bin.png" in md
+    assert "chunked/chunked_summary.csv" in md
+    assert "chunked/chunked_endpoints.csv" in md
+    assert "chunked/chunked_report.md" in md
+
+
+def test_run_chunked_section_loader_raises_on_malformed_csv(tmp_path: Path) -> None:
+    """A chunked/ with a corrupt endpoints CSV must fail loudly, not emit an empty section."""
+    reporter = _build_reporter(tmp_path)
+    reporter.output_dir.mkdir(parents=True, exist_ok=True)
+    chunked_dir = reporter.output_dir / "chunked"
+    chunked_dir.mkdir()
+    # Stage the full manifest so the partial-manifest fallback does not kick in.
+    (chunked_dir / "chunked_summary.csv").write_text("")
+    (chunked_dir / "chunked_report.md").write_text("")
+    (chunked_dir / "chunked_endpoint_position_mse_by_bin.png").write_bytes(b"PNG")
+    (chunked_dir / "chunked_endpoints.csv").write_text(
+        "chunk_size,bin,model\nnot-an-int,extreme,egnn\n"
+    )
+
+    with pytest.raises(ValueError, match="incompatible header"):
+        reporter.run()
+
+
+def test_run_skips_chunked_section_when_manifest_is_partial(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An endpoints CSV alone is not enough; the section attaches only with the full manifest."""
+    reporter = _build_reporter(tmp_path)
+    reporter.output_dir.mkdir(parents=True, exist_ok=True)
+    chunked_dir = reporter.output_dir / "chunked"
+    chunked_dir.mkdir()
+    # only the endpoints CSV is present; the figure / summary CSV / report MD are missing
+    (chunked_dir / "chunked_endpoints.csv").write_text(_CHUNKED_ENDPOINTS_CSV_FIXTURE)
+
+    with caplog.at_level("WARNING", logger="evaluation.report"):
+        reporter.run()
+
+    md = (reporter.output_dir / "report.md").read_text()
+    assert "Short-horizon corrected forecasting" not in md
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("chunked sub-directory is partial" in m for m in warnings), warnings
 
 
 def test_cli_invokes_reporter_end_to_end(tmp_path: Path) -> None:

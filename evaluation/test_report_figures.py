@@ -172,9 +172,9 @@ def test_plot_rollout_mse_presentation_labels_only_outer_panels(tmp_path: Path) 
 def test_plot_rollout_mse_presentation_tolerates_none_in_curves(tmp_path: Path) -> None:
     """A None entry in any curve must be plotted as a gap, not crash."""
     egnn, hgnn, baseline = _reports()
-    # corrupt one entry in baseline.curves.state_mse.median to None
+    # corrupt one entry in baseline.curves.position_mse.median to None
     baseline_close = baseline.encounter_bins.by_name["close"]
-    baseline_close.rollout.curves.state_mse.median[-1] = None
+    baseline_close.rollout.curves.position_mse.median[-1] = None
 
     plot_rollout_mse_presentation(egnn, hgnn, baseline, (tmp_path / "r.png",))
 
@@ -278,10 +278,10 @@ def test_plot_horizon_snapshot_by_bin_rejects_missing_horizon(tmp_path: Path) ->
     close_curves = egnn.encounter_bins.by_name["close"].rollout.curves
     idx_25 = close_curves.step.index(25)
     del close_curves.step[idx_25]
-    del close_curves.state_mse.median[idx_25]
-    del close_curves.state_mse.mean_finite[idx_25]
-    del close_curves.state_mse.p95[idx_25]
-    del close_curves.state_mse.finite_fraction[idx_25]
+    del close_curves.position_mse.median[idx_25]
+    del close_curves.position_mse.mean_finite[idx_25]
+    del close_curves.position_mse.p95[idx_25]
+    del close_curves.position_mse.finite_fraction[idx_25]
 
     with pytest.raises(ValueError, match=r"horizon 25 not present"):
         plot_horizon_snapshot_by_bin(egnn, hgnn, baseline, (tmp_path / "h25.png",), horizon=25)
@@ -339,18 +339,18 @@ def test_final_mse_bar_helper_uses_linear_axis() -> None:
     egnn_values, hgnn_values, baseline_values = _metric_values_at_step(
         bin_names,
         panels,
-        metric=_HorizonMetric.STATE_MSE,
+        metric=_HorizonMetric.POSITION_MSE,
         step=None,
     )
 
     assert egnn_values[-1] == pytest.approx(
-        egnn.encounter_bins.by_name[bin_names[-1]].rollout.curves.state_mse.median[-1]
+        egnn.encounter_bins.by_name[bin_names[-1]].rollout.curves.position_mse.median[-1]
     )
     assert hgnn_values[-1] == pytest.approx(
-        hgnn.encounter_bins.by_name[bin_names[-1]].rollout.curves.state_mse.median[-1]
+        hgnn.encounter_bins.by_name[bin_names[-1]].rollout.curves.position_mse.median[-1]
     )
     assert baseline_values[-1] == pytest.approx(
-        baseline.encounter_bins.by_name[bin_names[-1]].rollout.curves.state_mse.median[-1]
+        baseline.encounter_bins.by_name[bin_names[-1]].rollout.curves.position_mse.median[-1]
     )
 
 
@@ -367,22 +367,22 @@ def test_metric_values_at_step_uses_requested_horizon() -> None:
     egnn_values, hgnn_values, baseline_values = _metric_values_at_step(
         bin_names,
         panels,
-        metric=_HorizonMetric.STATE_MSE,
+        metric=_HorizonMetric.POSITION_MSE,
         step=25,
     )
 
     assert egnn_values[0] == pytest.approx(
-        egnn.encounter_bins.by_name[bin_names[0]].rollout.curves.state_mse.median[
+        egnn.encounter_bins.by_name[bin_names[0]].rollout.curves.position_mse.median[
             egnn.encounter_bins.by_name[bin_names[0]].rollout.curves.step.index(25)
         ]
     )
     assert hgnn_values[0] == pytest.approx(
-        hgnn.encounter_bins.by_name[bin_names[0]].rollout.curves.state_mse.median[
+        hgnn.encounter_bins.by_name[bin_names[0]].rollout.curves.position_mse.median[
             hgnn.encounter_bins.by_name[bin_names[0]].rollout.curves.step.index(25)
         ]
     )
     assert baseline_values[0] == pytest.approx(
-        baseline.encounter_bins.by_name[bin_names[0]].rollout.curves.state_mse.median[
+        baseline.encounter_bins.by_name[bin_names[0]].rollout.curves.position_mse.median[
             baseline.encounter_bins.by_name[bin_names[0]].rollout.curves.step.index(25)
         ]
     )
@@ -457,7 +457,7 @@ def test_plot_horizon_mse_by_bin_labels_x_ticks_with_horizons(tmp_path: Path) ->
             hgnn.encounter_bins.by_name[name],
             baseline.encounter_bins.by_name[name],
             bin_name=name,
-            metric=_HorizonMetric.STATE_MSE,
+            metric=_HorizonMetric.POSITION_MSE,
             show_x_label=idx == n_bins - 1,
         )
     try:
@@ -488,7 +488,7 @@ def test_render_horizon_panel_annotates_every_model_horizon() -> None:
             hgnn.encounter_bins.by_name["close"],
             baseline.encounter_bins.by_name["close"],
             bin_name="close",
-            metric=_HorizonMetric.STATE_MSE,
+            metric=_HorizonMetric.POSITION_MSE,
             show_x_label=True,
         )
 
@@ -514,7 +514,7 @@ def test_render_horizon_mse_panel_uses_linear_y_axis() -> None:
             hgnn.encounter_bins.by_name["close"],
             baseline.encounter_bins.by_name["close"],
             bin_name="close",
-            metric=_HorizonMetric.STATE_MSE,
+            metric=_HorizonMetric.POSITION_MSE,
             show_x_label=True,
         )
 
@@ -530,10 +530,10 @@ def test_plot_horizon_mse_by_bin_rejects_curves_missing_horizon(tmp_path: Path) 
     close_curves = egnn.encounter_bins.by_name["close"].rollout.curves
     idx_25 = close_curves.step.index(25)
     del close_curves.step[idx_25]
-    del close_curves.state_mse.median[idx_25]
-    del close_curves.state_mse.mean_finite[idx_25]
-    del close_curves.state_mse.p95[idx_25]
-    del close_curves.state_mse.finite_fraction[idx_25]
+    del close_curves.position_mse.median[idx_25]
+    del close_curves.position_mse.mean_finite[idx_25]
+    del close_curves.position_mse.p95[idx_25]
+    del close_curves.position_mse.finite_fraction[idx_25]
 
     with pytest.raises(ValueError, match=r"horizon 25 not present"):
         plot_horizon_mse_by_bin(egnn, hgnn, baseline, (tmp_path / "h.png",))
