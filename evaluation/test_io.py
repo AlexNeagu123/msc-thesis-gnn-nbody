@@ -1,8 +1,4 @@
-"""Tests for evaluation/_io.py.
-
-File-system round-trip: a typed report written to disk and read back must
-be equal to the original. Also pins the CSV header produced by the writer.
-"""
+"""Tests for evaluation/_io.py."""
 
 import csv
 from pathlib import Path

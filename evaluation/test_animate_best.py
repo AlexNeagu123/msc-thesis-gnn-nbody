@@ -1,13 +1,4 @@
-"""Tests for evaluation/animate_best.py.
-
-Selector tests run on small synthetic Trajectories so the contract
-(lowest joint mean rollout MSE per bin, non-finite filtering, empty-bin
-guard, shape validation) is exercised without model loading. The
-renderer is smoke-tested with a 4-frame synthetic trajectory writing a
-GIF (ffmpeg may not be present in the test environment). The
-orchestrator is exercised via a DI subclass that swaps the rollout and
-read-trajectories hooks.
-"""
+"""Tests for evaluation/animate_best.py."""
 
 from pathlib import Path
 
@@ -68,11 +59,8 @@ def _predicted_with_offsets(
 ) -> npt.NDArray[np.floating]:
     """Mirror `truth` exactly except for an additive offset on the final frame.
 
-    Per-trajectory mean rollout MSE scales with `offset**2 / n_frames`
-    because only the final frame is perturbed; this is a constant rescale
-    of the original final-frame squared error so the per-bin rank order is
-    preserved. Tests using this helper assert on winners, not on absolute
-    MSE values.
+    Per-trajectory mean MSE scales with offset**2, so the per-bin rank order is preserved
+    and tests assert on winners, not absolute values.
     """
     predicted = truth.copy()
     for i, offset in enumerate(final_offsets):
@@ -184,7 +172,7 @@ def test_select_best_trajectories_rejects_wrong_n_frames() -> None:
 
 
 def test_best_trajectory_basename_is_deterministic() -> None:
-    """The MP4 and GIF share a stable stem keyed by bin + trajectory index."""
+    """The MP4 and GIF share a stable stem keyed by bin and trajectory index."""
     sel = BestTrajectory(
         bin_id=2,
         bin_name="mid",

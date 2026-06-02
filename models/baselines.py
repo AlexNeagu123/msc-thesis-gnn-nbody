@@ -1,10 +1,4 @@
-"""Deterministic, non-learning baselines for the n-body next-state task.
-
-These models implement the same `forward(state) -> state` contract as the
-trained EGNN/HGNN so they can be plugged into the existing rollout and
-metric pipeline without special casing. Mass is always passed through
-unchanged.
-"""
+"""Deterministic baselines sharing the trained models' forward(state) -> state contract."""
 
 from __future__ import annotations
 

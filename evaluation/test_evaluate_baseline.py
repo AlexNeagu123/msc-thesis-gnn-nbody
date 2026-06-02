@@ -25,7 +25,7 @@ def _write_h5(path: Path, n_traj: int = 2, n_steps: int = 4) -> None:
 
 
 def _write_stratified_h5(path: Path, n_steps: int = 4) -> None:
-    """Write a 4-trajectory stratified fixture with two bins (extreme + smooth)."""
+    """Write a 4-trajectory stratified fixture with two bins (extreme and smooth)."""
     n_traj = 4
     rng = np.random.default_rng(7)
     states = rng.normal(size=(n_traj, n_steps, 3, 5)).astype(np.float32)
@@ -148,13 +148,7 @@ def test_baseline_rejects_unknown_kind(tmp_path: Path) -> None:
 
 
 def test_baseline_on_stratified_test_emits_encounter_bins(tmp_path: Path) -> None:
-    """Baseline evaluation on a stratified test file produces the per-bin block.
-
-    Mirrors the model-side test: read_trajectories now flows through
-    evaluate_baseline, so the shared build_evaluation_report path attaches
-    encounter_bins for baselines too. Block 3 made train_path required
-    even for non-fitted baselines so the envelope can be built.
-    """
+    """Baseline evaluation on a stratified test file produces the per-bin block."""
     train_path = tmp_path / "train.h5"
     test_path = tmp_path / "test.h5"
     _write_h5(train_path)
@@ -185,9 +179,8 @@ def test_baseline_on_stratified_test_emits_encounter_bins(tmp_path: Path) -> Non
 def test_baseline_on_stratified_without_train_path_raises(tmp_path: Path) -> None:
     """Stratified test file requires train_path even for non-fitted baselines.
 
-    Block 3 needs train_path to build the baseline envelope (which always
-    includes mean_velocity and mean_state). Silently dropping the per-bin
-    ratios for non-fitted baselines would produce inconsistent reports.
+    train_path is needed to build the baseline envelope; dropping per-bin ratios silently
+    would produce inconsistent reports.
     """
     test_path = tmp_path / "test.h5"
     _write_stratified_h5(test_path)

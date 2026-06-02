@@ -237,9 +237,7 @@ def test_noise_injection_modifies_pos_vel_only(make_cfg: TrainConfig) -> None:
 
     noisy = trainer.apply_noise(inputs)
 
-    # mass column unchanged
     assert torch.equal(noisy[..., 4:], original_mass)
-    # position and velocity columns changed
     assert not torch.equal(noisy[..., :2], original_pos)
     assert not torch.equal(noisy[..., 2:4], inputs[..., 2:4])
 
@@ -660,9 +658,7 @@ def test_init_checkpoint_accepts_checkpoint_without_model_name(
     assert trainer.model is not None
 
 
-# --- curriculum schema validation ---
-
-
+# curriculum schema validation
 def _params(**overrides: object) -> TrainingParams:
     """Helper for `TrainingParams` calls that need the required fields filled."""
     base: dict[str, object] = {"batch_size": 8, "lr": 1e-3, "weight_decay": 0.0}
@@ -716,9 +712,7 @@ def test_training_params_rejects_non_positive_epochs() -> None:
         _params(curriculum_horizons=[1, 5], curriculum_epochs=[3, 0])
 
 
-# --- gradient-clip and stability-knob validation ---
-
-
+# gradient-clip and stability-knob validation
 def test_training_params_default_gradient_clip_is_ten() -> None:
     """Default preserves the previously hard-coded value."""
     params = _params(epochs=1)
@@ -895,9 +889,7 @@ def test_training_params_stability_flags_round_trip() -> None:
     assert params.reset_optimizer_on_stage is True
 
 
-# --- gradient clipping and skip-nonfinite trainer behavior ---
-
-
+# gradient clipping and skip-nonfinite trainer behavior
 def _captured_clip_norms(spy: object) -> list[float]:
     """Pull the max_norm argument out of every recorded clip_grad_norm_ call."""
     norms: list[float] = []
@@ -978,12 +970,7 @@ def test_curriculum_without_clip_norms_falls_back_to_default(make_cfg: TrainConf
 def _inject_nan_loss_on_first_train_batch(
     trainer: Trainer,
 ) -> dict:
-    """Wrap trainer._compute_loss so the first training batch returns a NaN loss.
-
-    The injection keeps the model's grad path intact (multiplies by nan) so
-    `loss.backward()` still works when the trainer falls through. Validation
-    batches are untouched. Returns a dict with `injected: bool` for assertions.
-    """
+    """Wrap trainer._compute_loss so the first training batch returns a NaN loss."""
     state = {"injected": False}
     original = trainer._compute_loss
 
@@ -1017,12 +1004,7 @@ def test_skip_nonfinite_loss_skips_optimizer_step(make_cfg: TrainConfig) -> None
 
 @pytest.mark.parametrize("skip_flag", [True, False])
 def test_nan_grad_norm_always_skips_optimizer_step(make_cfg: TrainConfig, skip_flag: bool) -> None:
-    """Non-finite grad norm skips optimizer.step regardless of skip_nonfinite_batches.
-
-    Stepping with NaN/Inf gradients corrupts every parameter, so this guard
-    is unconditional. The flag only controls whether non-finite *loss* is
-    pre-empted before backward; non-finite *gradients* are never tolerated.
-    """
+    """Non-finite grad norm skips optimizer.step regardless of skip_nonfinite_batches."""
     cfg = replace(
         make_cfg,
         training=replace(make_cfg.training, epochs=1, skip_nonfinite_batches=skip_flag),
@@ -1053,12 +1035,7 @@ def test_nan_grad_norm_always_skips_optimizer_step(make_cfg: TrainConfig, skip_f
 def test_skip_disabled_invokes_clip_but_grad_check_still_blocks_step(
     make_cfg: TrainConfig,
 ) -> None:
-    """skip=False reaches backward+clip on a NaN-loss batch, but the step is still blocked.
-
-    With skipping off, the loss-level guard does not fire, so backward and
-    `clip_grad_norm_` run. The resulting non-finite grad norm is then caught
-    by the unconditional grad-level skip, so optimizer.step is not called.
-    """
+    """skip=False reaches backward+clip on a NaN-loss batch, but the grad guard blocks step."""
     cfg = replace(
         make_cfg,
         training=replace(make_cfg.training, epochs=1, skip_nonfinite_batches=False),
@@ -1110,8 +1087,7 @@ def test_diagnostics_batch_index_reflects_loader_position_after_skip(
     trainer.run()
 
     assert state["injected"]
-    # batch 1 was skipped via NaN-loss; diagnostics never sees it,
-    # remaining calls keep their loader-position indices in order.
+    # skipped batch 1 is absent; remaining indices keep their loader positions
     assert seen_indices == list(range(2, n_train_batches + 1))
 
 
@@ -1145,16 +1121,9 @@ def test_run_epoch_summary_has_no_grad_diagnostics_for_validation(make_cfg: Trai
     assert summary.skipped_batches is None
 
 
-# --- checkpoint_metric and rollout-score wiring ---
-
-
+# checkpoint_metric and rollout-score wiring
 class _ScriptedRolloutEvaluator:
-    """Stand-in for RolloutScoreEvaluator that returns scripted scores per call.
-
-    Used to assert that the trainer's best-checkpoint logic compares
-    `rollout.score` instead of `val_loss` without paying the cost of an
-    actual rollout on validation trajectories.
-    """
+    """Stand-in for RolloutScoreEvaluator that returns scripted scores per call."""
 
     def __init__(self, scores: list[float]) -> None:
         """Hold the queue of scores; one is popped per `score(...)` call."""
@@ -1213,9 +1182,8 @@ def test_csv_columns_blank_for_val_loss_metric(make_cfg: TrainConfig) -> None:
     for row in lines[1:]:
         cells = row.split(",")
         assert len(cells) == 12
-        # rollout block is empty (no rollout score in val_loss mode)
+        # rollout block blank in val_loss mode; grad block populated each epoch
         assert cells[4:8] == ["", "", "", ""]
-        # grad block is populated for every training epoch (mean/max/fraction/skipped)
         assert all(c != "" for c in cells[8:12])
 
 
@@ -1229,13 +1197,10 @@ def test_csv_grad_diagnostics_have_finite_values_per_epoch(make_cfg: TrainConfig
     for row in lines[1:]:
         cells = row.split(",")
         gnm, gnx, gcf, skip = cells[8], cells[9], cells[10], cells[11]
-        # values parse as finite floats / ints
         assert math.isfinite(float(gnm))
         assert math.isfinite(float(gnx))
         assert math.isfinite(float(gcf))
-        # max >= mean for any non-empty grad-norm sample
         assert float(gnx) >= float(gnm)
-        # clip fraction in [0, 1]; skip count >= 0
         assert 0.0 <= float(gcf) <= 1.0
         assert int(skip) >= 0
 
@@ -1254,9 +1219,8 @@ def test_csv_skipped_batches_column_reports_count_when_nan_loss_skipped(
     lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
 
     cells = lines[1].split(",")
-    # exactly one batch was injected with NaN loss
     assert cells[11] == "1"
-    # remaining grad cols still populated by the surviving batches
+    # grad cols still populated by the surviving batches
     assert cells[8] != ""
     assert cells[9] != ""
     assert cells[10] != ""
@@ -1277,16 +1241,13 @@ def test_csv_columns_populated_for_rollout_score_metric(
     run_dir = _find_run_dir(cfg.logging.dir)
     lines = (run_dir / "metrics.csv").read_text().strip().split("\n")
 
-    # one header + 3 data rows; rollout_score column (index 4) is populated each row
+    # one header and 3 data rows; rollout_score column (index 4) is populated each row
     rollout_scores = [row.split(",")[4] for row in lines[1:]]
     assert rollout_scores == ["0.700000", "0.500000", "0.600000"]
 
 
 def test_best_checkpoint_selected_by_rollout_score(make_cfg: TrainConfig) -> None:
-    """Best.pt is chosen by rollout_score, not val_loss.
-
-    Scripted scores put the win at epoch 2 regardless of how val_loss orders epochs.
-    """
+    """Best.pt is chosen by rollout_score, not val_loss."""
     cfg = replace(
         make_cfg,
         training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
@@ -1306,11 +1267,7 @@ def test_best_checkpoint_selected_by_rollout_score(make_cfg: TrainConfig) -> Non
 
 
 def test_scheduler_steps_on_selected_score_in_rollout_mode(make_cfg: TrainConfig) -> None:
-    """LR scheduler observes rollout_score, not val_loss, when that drives best.pt.
-
-    Otherwise LR adaptation and best-checkpoint selection would react to
-    different signals.
-    """
+    """LR scheduler observes rollout_score, not val_loss, when that drives best.pt."""
     cfg = replace(
         make_cfg,
         training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
@@ -1359,12 +1316,7 @@ def test_scheduler_steps_on_val_loss_in_default_mode(make_cfg: TrainConfig) -> N
 def test_checkpoint_val_loss_field_remains_one_step_validation_loss(
     make_cfg: TrainConfig,
 ) -> None:
-    """Even with rollout_score selection, Checkpoint.val_loss stays as one-step val MSE.
-
-    Locks the contract that downstream evaluation reports surfacing
-    `checkpoint_val_loss` continue to mean the validation MSE, not the
-    rollout score.
-    """
+    """Even with rollout_score selection, Checkpoint.val_loss stays the one-step val MSE."""
     cfg = replace(
         make_cfg,
         training=replace(make_cfg.training, checkpoint_metric="rollout_score"),
@@ -1384,9 +1336,7 @@ def test_checkpoint_val_loss_field_remains_one_step_validation_loss(
     assert math.isfinite(result.best_val_loss)
 
 
-# --- curriculum stage runner ---
-
-
+# curriculum stage runner
 def _curriculum_cfg(make_cfg: TrainConfig, horizons: list[int], epochs: list[int]) -> TrainConfig:
     """Build a TrainConfig with a curriculum schedule, leaving epochs/horizon unused."""
     return replace(
@@ -1417,7 +1367,7 @@ def test_curriculum_rebuilds_loader_when_horizon_changes(make_cfg: TrainConfig) 
     cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
     trainer = Trainer(cfg, model=DummyModel())
 
-    # initial loader is built for horizon=1 (one-step dataset)
+    # starts on horizon=1 one-step dataset
     assert isinstance(trainer.train_loader.dataset, NBodyDataset)
     assert trainer.current_horizon == 1
 
@@ -1444,11 +1394,7 @@ def test_curriculum_optimizer_state_persists_across_stages(make_cfg: TrainConfig
 
 
 def test_hgnn_curriculum_smoke(make_cfg: TrainConfig) -> None:
-    """HGNN trains through a tiny 1->2 curriculum without the old guard tripping.
-
-    Uses the real HGNN module (not DummyModel) so this exercises the autograd
-    path the prior unconditional rejection used to block.
-    """
+    """HGNN trains through a tiny 1->2 curriculum on the real module without tripping."""
     from models.hgnn import HGNN
 
     cfg = _curriculum_cfg(make_cfg, horizons=[1, 2], epochs=[1, 1])
@@ -1481,9 +1427,7 @@ def test_curriculum_best_checkpoint_indexes_globally(make_cfg: TrainConfig) -> N
     assert best_ckpt.selected_score == pytest.approx(0.1)
 
 
-# --- optimizer reset on stage transition ---
-
-
+# optimizer reset on stage transition
 def test_optimizer_reset_creates_new_instance_on_horizon_change(make_cfg: TrainConfig) -> None:
     """With reset_optimizer_on_stage=True, a horizon transition swaps in a fresh optimizer."""
     cfg = _curriculum_cfg(make_cfg, horizons=[1, 3], epochs=[1, 1])
@@ -1532,11 +1476,7 @@ def test_optimizer_not_reset_in_single_horizon_mode_even_with_flag(make_cfg: Tra
 
 
 def test_optimizer_not_reset_when_curriculum_horizon_repeats(make_cfg: TrainConfig) -> None:
-    """Reset is gated on horizon change; identical-horizon stages keep optimizer state.
-
-    No real config schedules the same horizon twice, but encoding the gating
-    contract here keeps the behavior unambiguous.
-    """
+    """Reset is gated on horizon change; identical-horizon stages keep optimizer state."""
     cfg = _curriculum_cfg(make_cfg, horizons=[1, 1], epochs=[1, 1])
     cfg = replace(
         cfg,
@@ -1637,9 +1577,7 @@ def test_curriculum_lrs_logged_per_stage_in_order(
     assert "lr=5.00e-04" in stage_lrs[1], stage_lrs[1]
 
 
-# --- artifact dir override ---
-
-
+# artifact dir override
 def test_apply_artifact_dir_sets_both_dirs(make_cfg: TrainConfig) -> None:
     """Both checkpointing and logging dirs are pointed at the artifact root."""
     cfg = apply_artifact_dir(make_cfg, "runs/curriculum/egnn/n5000")
@@ -1689,7 +1627,7 @@ def test_artifact_dir_colocates_checkpoints_and_metrics(
 
 
 def _write_stratified_val_h5(path: Path, *, n_frames: int = 10, seed: int = 0) -> None:
-    """Write a 4-trajectory stratified val fixture with two bins (extreme + smooth)."""
+    """Write a 4-trajectory stratified val fixture with two bins (extreme and smooth)."""
     from data._io import write_trajectories
     from data._types import EncounterBin, Trajectories
 

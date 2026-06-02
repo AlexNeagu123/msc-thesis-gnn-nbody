@@ -78,7 +78,7 @@ def test_envelope_full_mask_matches_min_over_baselines(tmp_path: Path) -> None:
 
 
 def test_envelope_per_bin_matches_subset_min(tmp_path: Path) -> None:
-    """Per-bin envelope matches subset_rollout_mse + per-step min across baselines."""
+    """Per-bin envelope matches subset_rollout_mse and per-step min across baselines."""
     train_path = tmp_path / "train.h5"
     _write_h5(train_path)
     test_traj = _test_traj()
@@ -99,12 +99,7 @@ def test_envelope_per_bin_matches_subset_min(tmp_path: Path) -> None:
 
 
 def test_fit_runs_baselines_once_per_call(tmp_path: Path) -> None:
-    """fit() populates the per-baseline MSE cache exactly once.
-
-    Subsequent envelope_for_mask() calls reuse the cache; verified by
-    inspecting that the cached list survives multiple per-bin queries
-    and continues to drive identical results.
-    """
+    """fit() populates the per-baseline MSE cache exactly once; queries reuse it."""
     train_path = tmp_path / "train.h5"
     _write_h5(train_path)
     test_traj = _test_traj()

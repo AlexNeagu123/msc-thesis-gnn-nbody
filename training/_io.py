@@ -1,11 +1,4 @@
-"""Serialization for training artifacts: configs, checkpoints, metrics CSV.
-
-Centralizes all on-disk I/O for the training pipeline so producers and
-consumers (train.py, evaluate.py) never touch raw torch.save / file writes.
-
-References:
-    - Schemas: training/_types.py (TrainConfig, Checkpoint, EpochMetrics)
-"""
+"""Serialization for training artifacts: configs, checkpoints, metrics CSV."""
 
 from pathlib import Path
 
@@ -28,12 +21,7 @@ def save_checkpoint(path: Path, checkpoint: Checkpoint) -> None:
 
 
 def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
-    """Load a checkpoint, normalising dict-shaped payloads into Checkpoint.
-
-    Validates that dict-shaped payloads carry dict-shaped `model` and
-    `optimizer` state at the I/O boundary, so contract violations surface
-    here instead of later inside `nn.Module.load_state_dict`.
-    """
+    """Load a checkpoint, normalising dict-shaped payloads into Checkpoint."""
     raw = torch.load(path, weights_only=False, map_location=device)
     if isinstance(raw, Checkpoint):
         return raw
@@ -63,12 +51,7 @@ def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
 
 
 def init_metrics_csv(path: Path, bin_names: tuple[str, ...] = ()) -> None:
-    """Create a metrics CSV with the EpochMetrics header row.
-
-    Pass `bin_names` to widen the header with per-bin bucket columns when
-    the trainer is in bucket-aware mode; the default preserves the
-    existing single-curve header byte-identically.
-    """
+    """Create a metrics CSV with the EpochMetrics header; `bin_names` widens it per bin."""
     path.write_text(EpochMetrics.csv_header(bin_names) + "\n")
 
 
@@ -77,10 +60,6 @@ def append_metrics(
     row: EpochMetrics,
     bin_names: tuple[str, ...] = (),
 ) -> None:
-    """Append one EpochMetrics row to an existing metrics CSV.
-
-    `bin_names` must match the value used by `init_metrics_csv` for this
-    file so per-bin columns line up with the header.
-    """
+    """Append one EpochMetrics row; `bin_names` must match init_metrics_csv for this file."""
     with path.open("a") as f:
         f.write(row.to_csv_row(bin_names) + "\n")

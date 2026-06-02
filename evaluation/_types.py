@@ -1,16 +1,4 @@
-"""Typed contracts for evaluation reports and metric-computation results.
-
-Two kinds of types live here:
-    - Persisted report schema (EvaluationReport and its tree), with
-      EvaluationReport.from_dict as the single entry point.
-    - Intermediate metric-computation containers (SingleStepMetrics, RolloutMSE),
-      returned by evaluation/metrics.py and consumed by evaluate.py.
-
-References:
-    - JSON schema produced by evaluation/evaluate.py:_build_report
-    - I/O wrapper: evaluation/_io.py
-    - Pattern mirror: training/_types.py
-"""
+"""Typed contracts for evaluation reports (EvaluationReport tree) and metric containers."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -286,11 +274,7 @@ class RolloutReport:
 
 @dataclass
 class EnergyDriftStepSummary:
-    """Cross-trajectory relative-drift summary at one anchor rollout step.
-
-    Mirrors RolloutMetricSummary so the energy-by-horizon figure can be
-    built the same way as the MSE-by-horizon figure.
-    """
+    """Cross-trajectory relative-drift summary at one anchor step (mirrors RolloutMetricSummary)."""
 
     mean_finite: float | None
     median: float | None
@@ -309,11 +293,7 @@ class EnergyDriftStepSummary:
 
 @dataclass
 class EnergyDriftCurves:
-    """Full per-step relative-drift curves across trajectories.
-
-    Mirrors RolloutMetricCurves but for the scalar drift metric (no
-    position/velocity split because drift is already scalar).
-    """
+    """Full per-step relative-drift curves across trajectories (scalar, no x/v split)."""
 
     step: list[int]
     mean_finite: list[float | None]
@@ -374,12 +354,7 @@ class EnergyReport:
 
 @dataclass
 class EncounterBinDefinition:
-    """One bin definition inside an evaluation report's encounter_bins block.
-
-    Independent of data/_types.py:EncounterBin so the report layer can
-    annotate each bin with its canonical id and serialize the +inf top-of-
-    range as the JSON-safe sentinel "inf" (mirrors data/_io.py).
-    """
+    """One bin definition in a report's encounter_bins block, with its canonical id."""
 
     id: int
     name: str
@@ -387,12 +362,7 @@ class EncounterBinDefinition:
     hi: float
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize, encoding hi=+inf as the string sentinel "inf".
-
-        Strict +inf check (`==`, not isinf) so -inf is never aliased to the
-        positive sentinel: this serializer is independent of upstream bin
-        validation, so it must not silently round -inf to +inf.
-        """
+        """Serialize, encoding hi=+inf as the string sentinel "inf" (strict ==, not isinf)."""
         return {
             "id": self.id,
             "name": self.name,
@@ -414,21 +384,9 @@ class EncounterBinDefinition:
 
 @dataclass
 class PerBinBaselineRatios:
-    """Baseline-normalized rollout score restricted to one encounter bin.
+    """Baseline-normalized rollout score for one encounter bin (JSON projection of RolloutScore).
 
-    Mirrors training/_types.py:RolloutScore semantics (geometric-mean log
-    ratio, anchor-step ratios, dominance horizon, fraction beating
-    baseline, final ratio) projected onto the JSON layer:
-      - drops the dense `ratios` array (already implied by the per-bin
-        rollout curves elsewhere in the report)
-      - stringifies anchor-step keys for JSON, ints in memory
-      - nests anchor-step ratios under `state_mse` so future per-metric
-        ratios (position_mse, velocity_mse) can sit alongside without a
-        schema break
-
-    Empty bins skip this block entirely (`baseline_ratios = None` on the
-    parent report); a populated PerBinBaselineRatios always implies a
-    non-empty bin with a defined model and envelope curve.
+    Anchor-step ratios nest under `state_mse` to leave room for future per-metric ratios.
     """
 
     score: float | None
@@ -461,13 +419,9 @@ class PerBinBaselineRatios:
 
 @dataclass
 class EncounterBinReport:
-    """Per-bin metrics block: one entry under encounter_bins.by_name.
+    """Per-bin metrics block (single-step, rollout, energy) under encounter_bins.by_name.
 
-    Mirrors the top-level evaluation report structure (single-step,
-    rollout, energy) restricted to trajectories whose true minimum
-    pairwise distance falls in this bin's interval. `baseline_ratios`
-    carries baseline-normalized rollout-score diagnostics for non-empty
-    bins; empty bins leave it None.
+    `baseline_ratios` is populated for non-empty bins, None otherwise.
     """
 
     count: int
@@ -510,18 +464,13 @@ class EncounterBinReport:
 
 @dataclass
 class EncounterBinsReport:
-    """Top-level encounter-stratification block.
-
-    `bins` carries the canonical ordered list of bin definitions; `by_name`
-    is the consumer-friendly lookup keyed by bin name. Insertion order in
-    `by_name` matches `bins` order.
-    """
+    """Top-level encounter-stratification block: ordered `bins` plus a `by_name` lookup."""
 
     bins: list[EncounterBinDefinition]
     by_name: dict[str, EncounterBinReport]
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize bins (canonical order) + by_name (lookup)."""
+        """Serialize bins (canonical order) and the by_name lookup."""
         return {
             "bins": [b.to_dict() for b in self.bins],
             "by_name": {k: v.to_dict() for k, v in self.by_name.items()},
@@ -626,12 +575,7 @@ def _energy_report_from_dict(d: dict[str, Any]) -> EnergyReport:
 
 @dataclass
 class EvaluationReport:
-    """Top-level evaluation report.
-
-    `encounter_bins` is optional: stratified test files produce a populated
-    block, non-stratified files leave it None. Serialization omits the key
-    entirely when None (matches the EnergyReport.learned_hamiltonian pattern).
-    """
+    """Top-level evaluation report; `encounter_bins` is populated only for stratified files."""
 
     metadata: EvaluationMetadata
     single_step: SingleStepReport
@@ -670,13 +614,7 @@ class EvaluationReport:
 
 @dataclass
 class SummaryRow:
-    """Flat CSV row built from EvaluationReport.
-
-    Dynamic keys (rollout_step_<n>_*, rollout_final_fraction_below_*_mse_<t>,
-    learned_h_*) are produced at to_csv_row() time rather than encoded as
-    static fields, since they depend on which steps/thresholds the report
-    contains and whether it includes a learned Hamiltonian.
-    """
+    """Flat CSV row built from EvaluationReport; dynamic columns are built in to_csv_row()."""
 
     report: EvaluationReport
 

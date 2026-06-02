@@ -50,7 +50,7 @@ def test_compute_rollout_mse_splits_position_and_velocity() -> None:
 
 
 def test_subset_rollout_mse_matches_manual_slicing() -> None:
-    """Subset re-aggregation matches a manual slice + recompute on the full curve."""
+    """Subset re-aggregation matches a manual slice and recompute on the full curve."""
     rng = np.random.default_rng(0)
     true = np.zeros((4, 3, 2, 5))
     predicted = rng.normal(scale=0.1, size=true.shape)

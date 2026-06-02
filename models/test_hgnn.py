@@ -116,12 +116,7 @@ def test_potential_network_shape() -> None:
 
 
 def test_free_fall_at_init() -> None:
-    """With tiny-init on V readouts, one forward step should be ~pure drift.
-
-    At init, V ~= 0 everywhere so forces ~= 0, leaving x_new ~= x + dt*v and
-    v_new ~= v. T is NOT tiny-init (we want dT/dv = v at m=1), so the drift
-    term x_dot = dT/dv should dominate and approximately equal v.
-    """
+    """With tiny-init V, one forward step is near-pure drift (v unchanged, x moves by ~dt*v)."""
     model = HGNN(dt=0.05)
     model.eval()
     state = _make_state()
@@ -132,25 +127,18 @@ def test_free_fall_at_init() -> None:
     x_new = out[..., :2]
     v_new = out[..., 2:4]
 
-    # velocities should be nearly unchanged (tiny-V gives tiny v_dot)
+    # tiny-V gives tiny v_dot
     assert torch.allclose(v_new, v, atol=0.05), (
         f"v_new deviates from v by {(v_new - v).abs().max().item():.4f}"
     )
 
-    # positions should move approximately by dt * dT/dv (not strictly dt * v
-    # because T is learned; for untrained mlp_T on standard init, dT/dv is
-    # correlated with v but not identical). We check that the move is
-    # proportional to dt and not huge.
+    # position move is proportional to dt, not huge
     pos_change = (x_new - x).abs().max().item()
     assert pos_change < 1.0, f"position change {pos_change:.4f} too large at init"
 
 
 def test_gradient_flow() -> None:
-    """All trainable parameters receive gradients after backward pass.
-
-    Critically tests that autograd.grad(..., create_graph=True) propagates
-    loss gradients through the leapfrog integrator back to model params.
-    """
+    """All trainable parameters receive gradients through the leapfrog integrator."""
     model = HGNN()
     state = _make_state()
 
@@ -164,14 +152,7 @@ def test_gradient_flow() -> None:
 
 
 def test_energy_conservation_at_init() -> None:
-    """Killer test: energy drift over a short rollout should be bounded at init.
-
-    With tiny-init, H starts near zero. A correct symplectic leapfrog keeps
-    |H(t) - H(0)| bounded (not monotonically growing). This test catches:
-        - non-symplectic integrators (Euler, RK4 pretending to be leapfrog)
-        - sign errors in Hamilton's equations
-        - missing autograd graph retention
-    """
+    """Energy drift over a short rollout stays bounded at init (symplectic invariant)."""
     torch.manual_seed(42)
     model = HGNN(dt=0.05)
     model.eval()
@@ -179,13 +160,12 @@ def test_energy_conservation_at_init() -> None:
     state = _make_state(batch=2)
     m = state[..., 4:]
 
-    # compute H at t=0 in normalized coords
+    # H at t=0 in normalized coords
     with torch.enable_grad():
         x0 = (state[..., :2] / model.pos_std).detach().requires_grad_(True)
         v0 = (state[..., 2:4] / model.vel_std).detach().requires_grad_(True)
         H0 = model.hamiltonian(x0, v0, m).detach()
 
-    # roll out 10 steps
     energies = [H0]
     current = state
     for _ in range(10):
@@ -196,8 +176,6 @@ def test_energy_conservation_at_init() -> None:
             H = model.hamiltonian(x, v, m).detach()
         energies.append(H)
 
-    # at init, |H| is tiny (tiny-init on V, and T is small at random v).
-    # require drift to stay below a loose bound.
     max_drift = max((h - H0).abs().max().item() for h in energies)
     assert max_drift < 1.0, f"energy drift {max_drift:.4f} too large"
 

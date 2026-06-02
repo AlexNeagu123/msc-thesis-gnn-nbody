@@ -7,7 +7,6 @@ References:
     - EGNN reference implementation: https://github.com/vgsatorras/egnn
     - HGNN (Bishnoi et al. 2023), repulsive gravity setup: https://arxiv.org/abs/2307.05299
     - Architecture specs (data specification): ../../../edu/architecture-specs.md
-    - Stratified d_min binning: data/encounters.py
 """
 
 import argparse
@@ -100,19 +99,10 @@ class Generator:
         )
 
     def _generate_stratified_split(self, split: SplitConfig) -> None:
-        """Generate one split with per-bin acceptance quotas.
+        """Generate one split with per-bin acceptance quotas, shuffled before saving.
 
-        Repeatedly simulates a candidate trajectory, computes its
-        true minimum pairwise distance over time, classifies it into
-        the configured encounter bins, and keeps it iff that bin's
-        quota for this split is not yet full. The accepted trajectories
-        are shuffled with the same split RNG before saving so training
-        is mixed and val/test are not grouped by bin.
-
-        The candidate-attempt cap (`StratifiedConfig.max_attempts` if set,
-        otherwise `max(10000, n_trajectories * 2000)`) prevents silently
-        infinite loops when an extreme bin is rare under the configured
-        Gaussian initial conditions.
+        Candidates are classified by d_min and kept until each bin's quota fills;
+        an attempt cap guards against rare bins looping forever.
         """
         if self.cfg.stratified is None:  # narrowing for type checkers; caller dispatched
             msg = "_generate_stratified_split called without a stratified config"
@@ -153,9 +143,7 @@ class Generator:
         simulator_rejections = 0
         attempted = 0
 
-        # safer default than n*500: rare bins (e.g. smooth >= 0.2 under the
-        # current Gaussian setup is roughly 5-6%) need many candidate draws
-        # to fill quotas; explicit StratifiedConfig.max_attempts overrides.
+        # generous default: rare bins need many draws to fill; max_attempts overrides
         max_attempts = strat.max_attempts or max(10000, split.n_trajectories * 2000)
         progress_step = max(1, split.n_trajectories // 20)
 
@@ -224,8 +212,7 @@ class Generator:
             bin_names_arr = np.array([], dtype=object)
             distances_arr = np.array([], dtype=np.float64)
 
-        # candidate-discard rate: combines simulator rejections AND over-quota
-        # discards, so it is broader than the uniform path's rejection_rate.
+        # broader than the uniform path: counts both simulator rejections and over-quota discards
         rejection_rate = 1 - split.n_trajectories / attempted if attempted > 0 else 0.0
         metadata = TrajectoryMetadata(
             n_trajectories=split.n_trajectories,

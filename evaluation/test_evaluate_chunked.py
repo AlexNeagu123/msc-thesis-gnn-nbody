@@ -1,10 +1,4 @@
-"""Tests for evaluation/evaluate_chunked.py.
-
-Selector + aggregator tests build small synthetic Trajectories and a toy
-deterministic model so the chunked-rollout contract is verifiable without
-ever touching a checkpoint. The orchestrator is exercised via a DI subclass
-that swaps the rollout and model-loading hooks.
-"""
+"""Tests for evaluation/evaluate_chunked.py."""
 
 import csv
 from pathlib import Path
@@ -35,9 +29,8 @@ from evaluation.metrics import rollout
 class _ShiftModel(nn.Module):
     """Toy model whose prediction is `state + delta` along the position axes.
 
-    Used to exercise the chunked rollout without involving real checkpoints.
-    Compounding error is `delta * step_count`, so chunked rollouts produce
-    measurably smaller per-frame error than autonomous ones.
+    Compounding error is delta * step_count, so chunked rollouts show smaller per-frame
+    error than autonomous ones.
     """
 
     def __init__(self, delta: float = 0.1) -> None:
@@ -79,11 +72,7 @@ def _bundle_for(states: npt.NDArray[np.floating], bin_ids: list[int]) -> Traject
 
 
 def test_run_chunked_rollout_k1_uses_truth_every_step() -> None:
-    """K=1 means every prediction starts from the next truth frame.
-
-    With a +0.1 shift model and an all-zero ground truth, every predicted
-    frame should equal truth + delta exactly once (no error compounding).
-    """
+    """K=1 means every prediction starts from the next truth frame, so no error compounds."""
     truth = _toy_trajectories(n_traj=1, n_frames=4)
     model = _ShiftModel(delta=0.1)
     device = torch.device("cpu")

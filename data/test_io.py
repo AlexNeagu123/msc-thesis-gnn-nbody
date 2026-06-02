@@ -1,8 +1,4 @@
-"""Tests for data/_io.py.
-
-Round-trip a Trajectories bundle through write_trajectories /
-read_trajectories and confirm states, energies, and metadata survive.
-"""
+"""Tests for data/_io.py."""
 
 import json
 from pathlib import Path
@@ -139,9 +135,7 @@ def test_load_data_config_parses_yaml(tmp_path: Path) -> None:
     assert cfg.splits[0].n_trajectories == 100
 
 
-# --- StratifiedConfig parsing and validation ---
-
-
+# StratifiedConfig parsing and validation
 def _base_data_yaml() -> dict:
     """Minimal valid YAML body for a DataGenConfig (no stratified section)."""
     return {
@@ -237,9 +231,7 @@ def test_stratified_config_round_trips_through_yaml(tmp_path: Path) -> None:
     assert cfg.stratified.test_distribution == {"a": 1, "b": 1, "c": 1}
 
 
-# --- bin-structure validation ---
-
-
+# bin-structure validation
 def test_stratified_rejects_empty_bins() -> None:
     """A stratified config without any bins is meaningless."""
     with pytest.raises(ValueError, match="bins must be non-empty"):
@@ -336,9 +328,7 @@ def test_stratified_rejects_non_contiguous_bins() -> None:
         )
 
 
-# --- distribution validation ---
-
-
+# distribution validation
 def test_stratified_rejects_distribution_missing_bin_key() -> None:
     """Every bin must appear in every distribution."""
     with pytest.raises(ValueError, match=r"missing=\['c'\]"):
@@ -371,9 +361,7 @@ def test_stratified_rejects_zero_total_distribution_weight() -> None:
         _make_stratified(test_distribution={"a": 0.0, "b": 0.0, "c": 0.0})
 
 
-# --- from_dict required-field checks ---
-
-
+# from_dict required-field checks
 def test_stratified_from_dict_requires_bins_when_enabled() -> None:
     """Enabling without bins is a config-shape error caught up front."""
     with pytest.raises(ValueError, match=r"stratified\.bins is required"):
@@ -388,16 +376,9 @@ def test_stratified_from_dict_requires_all_three_distributions() -> None:
         StratifiedConfig.from_dict(payload)
 
 
-# --- input shape hardening ---
-
-
+# input shape hardening
 def test_stratified_rejects_last_bin_with_negative_infinity() -> None:
-    """Top sentinel must be exactly +inf; -inf is caught by the lo<hi guard upstream.
-
-    The last-bin `hi != +inf` check is intentionally exact (belt-and-suspenders)
-    even though, in practice, any sane `lo >= 0` makes `lo < -inf` fail first.
-    This test pins the rejection regardless of which guard fires.
-    """
+    """A -inf top sentinel is rejected regardless of which guard fires."""
     bins = (
         EncounterBin("a", 0.0, 0.5),
         EncounterBin("b", 0.5, float("-inf")),
@@ -518,9 +499,7 @@ def test_stratified_rejects_non_integer_max_attempts(bad: object) -> None:
         _make_stratified(max_attempts=bad)
 
 
-# --- HDF5 stratification schema ---
-
-
+# HDF5 stratification schema
 def _stratified_trajectories(n_traj: int = 3) -> Trajectories:
     """Build a Trajectories with stratification fields populated for tests."""
     rng = np.random.default_rng(7)
@@ -594,7 +573,7 @@ def test_read_raises_on_partial_stratification(tmp_path: Path) -> None:
     """A file with some stratification components but not all is rejected on read."""
     path = tmp_path / "partial.h5"
     write_trajectories(path, _stratified_trajectories())
-    # corrupt the file by deleting one of the datasets after a clean write
+    # delete one dataset after a clean write
     with h5py.File(path, "a") as f:
         del f["min_pairwise_distance"]
 
@@ -752,11 +731,7 @@ def test_write_rejects_distance_outside_assigned_bin(tmp_path: Path) -> None:
 
 
 def test_encoded_bins_attr_is_strict_json_with_inf_sentinel(tmp_path: Path) -> None:
-    """The persisted JSON attr is parseable by strict (allow_nan=False) decoders.
-
-    This pins the `+inf` -> `"inf"` sentinel encoding so files remain
-    portable and don't rely on Python's `Infinity` extension.
-    """
+    """Persisted JSON uses the "inf" sentinel, so strict (allow_nan=False) decoders parse it."""
     path = tmp_path / "strat.h5"
     write_trajectories(path, _stratified_trajectories())
 
@@ -764,7 +739,6 @@ def test_encoded_bins_attr_is_strict_json_with_inf_sentinel(tmp_path: Path) -> N
         attr = f.attrs["encounter_bins_json"]
     assert "Infinity" not in attr
     payload = json.loads(attr)
-    # the sentinel survives as the literal string "inf"
     assert payload[-1]["hi"] == "inf"
 
 
@@ -786,11 +760,7 @@ def test_read_validates_corrupted_name_field(tmp_path: Path) -> None:
 
 
 def test_write_rejects_empty_bins_when_arrays_present(tmp_path: Path) -> None:
-    """Empty bins tuple alongside populated arrays is internally inconsistent.
-
-    `()` is `is not None` so it passes the atomicity check; the dedicated
-    non-empty guard catches it.
-    """
+    """Empty bins tuple with populated arrays is caught by the non-empty guard."""
     t = _stratified_trajectories()
     bad = Trajectories(
         states=t.states,

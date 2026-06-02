@@ -77,7 +77,7 @@ def test_expand_does_not_tile() -> None:
     expanded = expand_trajectory_mask_to_transitions(mask, n_transitions=2)
 
     np.testing.assert_array_equal(expanded, [True, True, False, False])
-    # tiling would produce [True, False, True, False] - explicit guard
+    # guard against tiling, which would give [True, False, True, False]
     assert not np.array_equal(expanded, [True, False, True, False])
 
 

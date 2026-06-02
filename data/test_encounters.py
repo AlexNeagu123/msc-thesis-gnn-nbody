@@ -13,9 +13,8 @@ from data.encounters import (
     target_counts_from_distribution,
 )
 
-# --- min_pairwise_distance_over_time ---
 
-
+# min_pairwise_distance_over_time
 def _states(*frames: np.ndarray) -> np.ndarray:
     """Stack a sequence of (n_particles, 2) frames into a (T, N, 2) array."""
     return np.stack(frames, axis=0).astype(np.float64)
@@ -48,7 +47,6 @@ def test_min_pairwise_distance_picks_closest_frame() -> None:
 
 def test_min_pairwise_distance_three_particles_picks_tightest_pair() -> None:
     """With one tight pair and one loose pair, the tight pair wins."""
-    # particles 0 and 1 are 0.5 apart everywhere; particle 2 stays >=2 from both
     frame_a = np.array([[0.0, 0.0], [0.5, 0.0], [3.0, 3.0]])
     frame_b = np.array([[0.1, 0.0], [0.6, 0.0], [3.0, 3.0]])
     states = _states(frame_a, frame_b)
@@ -58,7 +56,6 @@ def test_min_pairwise_distance_three_particles_picks_tightest_pair() -> None:
 
 def test_min_pairwise_distance_uses_only_first_two_coords() -> None:
     """Velocity / mass columns past index 1 do not affect the spatial distance."""
-    # particles at (0, 0) and (3, 4) regardless of trailing fields
     frame = np.array([[0.0, 0.0, 9.9, 9.9, 1.0], [3.0, 4.0, -1.1, -1.1, 1.0]])
     states = _states(frame, frame)
 
@@ -89,9 +86,7 @@ def test_min_pairwise_distance_rejects_zero_steps() -> None:
         min_pairwise_distance_over_time(np.zeros((0, 3, 2)))
 
 
-# --- assign_encounter_bin ---
-
-
+# assign_encounter_bin
 @pytest.mark.parametrize(
     ("distance", "expected"),
     [
@@ -139,9 +134,7 @@ def test_assign_encounter_bin_raises_when_top_sentinel_missing() -> None:
         assign_encounter_bin(2.0, bounded)
 
 
-# --- target_counts_from_distribution ---
-
-
+# target_counts_from_distribution
 _TRAINING_DISTRIBUTION: dict[str, float] = {
     "extreme": 10,
     "very_close": 15,

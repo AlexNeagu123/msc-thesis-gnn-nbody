@@ -55,12 +55,7 @@ def _format_rollout_or_bucket(
     rollout: RolloutScore | None,
     bucket: BucketRolloutScore | None,
 ) -> str:
-    """Render the per-stage rollout score for log lines.
-
-    Returns the single-curve score in `rollout_score` mode, the macro score
-    in `bucket_macro_rollout_score` mode, and "n/a" when neither evaluator
-    is in use (val_loss mode).
-    """
+    """Render the rollout (or bucket-macro) score for log lines, "n/a" in val_loss mode."""
     if rollout is not None:
         return f"{rollout.score:+.4f}"
     if bucket is not None:
@@ -107,13 +102,8 @@ class Trainer:
     ) -> None:
         """Set up all training components from config.
 
-        Args:
-            cfg: training configuration.
-            model: optional pre-built model (dependency-injection for tests).
-            init_checkpoint: optional path to a checkpoint whose model weights
-                should be loaded as the starting point for a fresh run. The
-                optimizer, scheduler, run_id, logs, and checkpoint dir are NOT
-                inherited; they all start fresh from the current config.
+        `model` is a DI hook for tests. `init_checkpoint` seeds model weights only;
+        optimizer, scheduler, run_id, logs, and checkpoint dir all start fresh.
         """
         valid_metrics = ("val_loss", "rollout_score", "bucket_macro_rollout_score")
         if cfg.training.checkpoint_metric not in valid_metrics:
@@ -146,9 +136,7 @@ class Trainer:
         self.optimizer, self.scheduler = self._setup_optimizer()
         self.ckpt_dir = self._setup_checkpointing()
 
-        # Rollout evaluators are constructed before logging so the CSV header
-        # can be widened with bin_order in bucket mode. Only one of the two is
-        # ever non-None per run; the third metric (val_loss) leaves both None.
+        # built before logging so the CSV header can widen with bin_order in bucket mode
         self.rollout_evaluator: RolloutScoreEvaluator | None = None
         self.bucket_evaluator: BucketRolloutScoreEvaluator | None = None
         self.bucket_bin_order: tuple[str, ...] = ()
@@ -207,14 +195,12 @@ class Trainer:
                 self.train_loader, self.val_loader = self._setup_loaders_for_horizon(horizon)
                 self.current_horizon = horizon
                 self.diagnostics.dataset = self.train_loader.dataset
-                # reset is gated on horizon change so it fires alongside the loader rebuild;
-                # consecutive same-horizon stages keep optimizer state intact by design.
+                # gated on horizon change: consecutive same-horizon stages keep optimizer state
                 if cfg.training.reset_optimizer_on_stage:
                     self.optimizer, self.scheduler = self._setup_optimizer(lr=target_stage_lr)
                     logger.info("optimizer reset at stage transition | horizon=%d", horizon)
 
-            # apply per-stage LR before the stage-start log line so it reflects the actual rate;
-            # idempotent when the optimizer was just rebuilt with target_stage_lr.
+            # apply per-stage LR before the stage-start log line; idempotent after a reset
             if cfg.training.curriculum_lrs is not None:
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = target_stage_lr
@@ -261,8 +247,7 @@ class Trainer:
                 else:
                     selected_score = val_loss
 
-                # scheduler tracks the same metric used for best-checkpoint selection so
-                # LR adaptation and best.pt agree on what improvement means.
+                # scheduler tracks the same metric as best-checkpoint selection
                 if self.scheduler is not None:
                     self.scheduler.step(selected_score)
 
@@ -326,17 +311,12 @@ class Trainer:
             val_history=val_history,
         )
 
-    # --- setup helpers ---
-
+    # setup helpers
     def _setup_data(self) -> tuple[DataLoader, DataLoader]:
         """Compute one-time normalization stats and build initial-stage loaders.
 
-        Stats are computed exactly once from whichever dataset corresponds to
-        the initial stage horizon. They are NOT recomputed when loaders are
-        rebuilt for later curriculum stages, so the model's pos_std/vel_std
-        buffers remain stable across the whole run. Practical effect: with
-        the planned schedules that always start at horizon=1, stats come
-        from the full one-step dataset and match prior behavior.
+        Stats are computed once from the initial-stage dataset and never recomputed,
+        so pos_std/vel_std stay fixed across curriculum stages.
         """
         cfg = self.cfg
         initial_horizon = self._initial_stage_horizon()
@@ -395,11 +375,7 @@ class Trainer:
         return train_loader, val_loader
 
     def _initial_stage_horizon(self) -> int:
-        """Horizon used for the first stage of the run.
-
-        In curriculum mode this is the first scheduled horizon; otherwise it
-        is the configured single-horizon `multi_step_horizon`.
-        """
+        """First-stage horizon: the first curriculum entry, else multi_step_horizon."""
         cfg = self.cfg
         if cfg.training.curriculum_horizons is not None:
             return cfg.training.curriculum_horizons[0]
@@ -419,24 +395,14 @@ class Trainer:
         return [(cfg.training.multi_step_horizon, cfg.training.epochs)]
 
     def _stage_clip_norm(self, stage_idx: int) -> float:
-        """Return the gradient-clip max-norm for the given curriculum stage.
-
-        In single-horizon mode there is one stage, so the configured
-        `gradient_clip_norm` is always used. In curriculum mode, an explicit
-        `curriculum_gradient_clip_norms` overrides it per stage; if the list
-        is None, every stage falls back to `gradient_clip_norm`.
-        """
+        """Gradient-clip max-norm for the stage: curriculum_gradient_clip_norms, else the base."""
         cfg = self.cfg
         if cfg.training.curriculum_gradient_clip_norms is not None:
             return cfg.training.curriculum_gradient_clip_norms[stage_idx]
         return cfg.training.gradient_clip_norm
 
     def _stage_lr(self, stage_idx: int) -> float:
-        """Return the optimizer LR for the given curriculum stage.
-
-        `curriculum_lrs` overrides the base `lr` per stage; if the list is None,
-        every stage falls back to `lr`. Mirrors `_stage_clip_norm`.
-        """
+        """Optimizer LR for the stage: curriculum_lrs, else the base lr."""
         cfg = self.cfg
         if cfg.training.curriculum_lrs is not None:
             return cfg.training.curriculum_lrs[stage_idx]
@@ -460,14 +426,9 @@ class Trainer:
         return model
 
     def _load_init_checkpoint(self, path: str | Path) -> None:
-        """Load model weights only from a previous checkpoint; everything else stays fresh.
+        """Load model weights only from a checkpoint; everything else stays fresh.
 
-        The optimizer, scheduler, epoch counter, run_id, logging dir, and
-        checkpoint dir are all built from the current config. Only the
-        model state_dict is taken from the checkpoint.
-
-        A checkpoint with a non-None `model_name` must match `cfg.model.name`.
-        Older checkpoints with `model_name=None` are accepted as-is.
+        A non-None checkpoint `model_name` must match `cfg.model.name`.
         """
         path = Path(path)
         checkpoint = load_checkpoint(path, self.device)
@@ -492,12 +453,7 @@ class Trainer:
         self,
         lr: float | None = None,
     ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None]:
-        """Create optimizer and optional LR scheduler.
-
-        `lr` overrides the base `cfg.training.lr` when set; curriculum stage
-        resets pass the per-stage LR so the fresh optimizer starts at the
-        right rate.
-        """
+        """Create optimizer and optional LR scheduler; `lr` overrides cfg.training.lr."""
         cfg = self.cfg
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -526,12 +482,7 @@ class Trainer:
         return ckpt_dir
 
     def _setup_logging(self) -> Path | None:
-        """Create log directory and CSV header if enabled.
-
-        Header width follows `self.bucket_bin_order`: empty in single-curve
-        mode (header is byte-identical to non-bucket runs), populated in
-        bucket-aware mode so per-bin columns are reserved up front.
-        """
+        """Create log directory and CSV header if enabled; width follows bucket_bin_order."""
         if not self.cfg.logging.enabled:
             return None
 
@@ -552,24 +503,12 @@ class Trainer:
         )
         return inputs + noise
 
-    # --- epoch helpers ---
-
+    # epoch helpers
     def _run_epoch(self, *, training: bool, verbose: bool) -> EpochRunSummary:
         """Run one train or validation epoch and return a summary.
 
-        Skip semantics differ for the two failure modes:
-            - non-finite loss respects `skip_nonfinite_batches`. With the
-              flag on, the batch is dropped before backward; with it off,
-              backward and `clip_grad_norm_` still run so the explosion is
-              visible (e.g. via the gradient norm in the next check).
-            - non-finite gradient norm is ALWAYS skipped. Stepping the
-              optimizer with NaN/Inf gradients is never useful and
-              corrupts every parameter, so this protection is unconditional.
-
-        `batch_idx` reflects the loader's batch position (1..len(loader))
-        so diagnostics keep their loader-relative meaning even when some
-        batches are skipped. `n_taken` only counts batches whose loss
-        contributed to the running mean.
+        Non-finite loss is skipped only when `skip_nonfinite_batches` is set;
+        a non-finite gradient norm is always skipped.
         """
         if training:
             self.model.train()
@@ -670,11 +609,7 @@ class Trainer:
         inputs: torch.Tensor,
         targets: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Dispatch to the configured loss path, returning (preds, loss, diag_targets).
-
-        `diag_targets` is the single-step target tensor (B, N, 5) suitable for
-        feeding to TrainingDiagnostics, regardless of which path runs.
-        """
+        """Dispatch to one-step or rollout loss; returns (preds, loss, single-step diag_targets)."""
         if self.current_horizon == 1:
             preds, loss = self._one_step_loss(inputs, targets)
             return preds, loss, targets
@@ -696,18 +631,10 @@ class Trainer:
         inputs: torch.Tensor,
         targets: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Unroll the model `horizon` steps; weighted-mean MSE on (x, y, vx, vy).
+        """Unroll `horizon` steps; gamma-weighted-mean MSE on (x, y, vx, vy).
 
-        Loss is `sum_k gamma^k * MSE_k / sum_k gamma^k`, keeping the value on
-        the same scale as one-step MSE so val_loss, scheduler thresholds, and
-        gradient magnitudes stay comparable across horizon settings.
-
-        Gradients flow through every rollout step; intermediate states are not
-        detached. Only the initial input is noised (by `_run_epoch`); every
-        subsequent state is the model's own prediction. Targets stay clean.
-
-        Mass is excluded from the loss because the model passes it through
-        unchanged at every step and the trajectory keeps it constant.
+        Loss is sum_k gamma^k * MSE_k / sum_k gamma^k, on the same scale as one-step MSE.
+        Gradients flow through every step; mass is excluded (passed through unchanged).
         """
         horizon = self.current_horizon
         gamma = self.cfg.training.multi_step_gamma
@@ -737,14 +664,7 @@ class Trainer:
         selected_score: float,
         is_best: bool,
     ) -> None:
-        """Save model checkpoint if enabled.
-
-        `Checkpoint.rollout_score` carries the scalar rollout score in
-        effect: the single-curve score in `rollout_score` mode and the
-        macro score in `bucket_macro_rollout_score` mode. Per-bin scores
-        are intentionally not persisted in the checkpoint; they live in
-        the metrics CSV alongside the run.
-        """
+        """Save latest.pt (and best.pt when is_best) if checkpointing is enabled."""
         if self.ckpt_dir is None:
             return
 
@@ -784,19 +704,7 @@ class Trainer:
         rollout: RolloutScore | None,
         bucket: BucketRolloutScore | None,
     ) -> None:
-        """Write epoch metrics to CSV and console.
-
-        `total_epochs` is the run-wide denominator. In single-horizon mode it
-        equals `cfg.training.epochs`; in curriculum mode it is the sum of
-        `curriculum_epochs`. Computing it in `run` avoids the `epoch/0`
-        rendering artefact that would otherwise show up under curriculum.
-
-        Gradient diagnostics for the epoch come from `train_summary` and are
-        only populated for training epochs that took at least one step. In
-        bucket mode the macro score lands in `rollout_score`, the single-
-        curve diagnostic columns stay blank, and per-bin RolloutScore objects
-        feed the dynamic bucket columns via `self.bucket_bin_order`.
-        """
+        """Write epoch metrics to CSV and console."""
         train_loss = train_summary.loss
 
         if rollout is not None:
@@ -860,8 +768,7 @@ class Trainer:
                 lr,
             )
 
-    # --- static helpers ---
-
+    # static helpers
     @staticmethod
     def _build_dataset(
         path: str,
@@ -930,13 +837,7 @@ def train(
 
 
 def apply_artifact_dir(cfg: TrainConfig, artifact_dir: str | Path) -> TrainConfig:
-    """Override checkpointing.dir and logging.dir to a single artifact root.
-
-    Force-enables both checkpointing and logging because the override only
-    makes sense when artifacts are actually written. Use this from the CLI
-    to colocate checkpoints and logs under a single run root without
-    editing the YAML.
-    """
+    """Point checkpointing.dir and logging.dir at one artifact root, force-enabling both."""
     artifact_dir = str(artifact_dir)
     return replace(
         cfg,

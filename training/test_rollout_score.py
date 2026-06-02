@@ -152,11 +152,7 @@ def test_empty_curve_raises() -> None:
 
 
 def test_baseline_zero_does_not_blow_up() -> None:
-    """A zero baseline step stays finite thanks to eps in the denominator.
-
-    Realistic edge: persistence baseline yields zero MSE on synthetic
-    stationary trajectories. The score must still be finite.
-    """
+    """A zero baseline step stays finite thanks to eps in the denominator."""
     n = 10
     baseline = np.zeros(n)
     model = np.full(n, 1e-6)
@@ -226,14 +222,7 @@ def test_evaluator_caches_envelope(tmp_path: Path) -> None:
 
 
 def test_evaluator_score_against_persistence_baseline_yields_unit_ratio(tmp_path: Path) -> None:
-    """A model that is the persistence baseline should match it step-for-step.
-
-    Persistence is one of the envelope members, so it can never be strictly
-    better than the envelope. Its curve equals the envelope at every step
-    where persistence is the per-step argmin, giving R = 1 there. Most steps
-    other baselines beat persistence, so we just check that the persistence
-    score is finite and non-negative on average (it does not beat the envelope).
-    """
+    """Persistence is an envelope member, so it can never strictly beat the envelope."""
     val_path = tmp_path / "val.h5"
     train_path = tmp_path / "train.h5"
     _write_traj_h5(val_path, n_frames=8)
@@ -244,9 +233,8 @@ def test_evaluator_score_against_persistence_baseline_yields_unit_ratio(tmp_path
     score = ev.score(PersistenceBaseline().eval())
 
     assert math.isfinite(score.score)
-    # persistence cannot strictly beat the envelope (it's a member); score >= 0
+    # cannot strictly beat the envelope, so score is non-negative and never dominates
     assert score.score >= -1e-9
-    # but it ties at every step where it is the minimum baseline
     assert score.dominance_horizon == 0
 
 
@@ -254,12 +242,7 @@ def test_evaluator_score_against_persistence_baseline_yields_unit_ratio(tmp_path
 def test_evaluator_preserves_caller_model_training_state(
     tmp_path: Path, start_training: bool
 ) -> None:
-    """Scoring restores model.training to whatever it was before the call.
-
-    Today's models have no dropout/batchnorm so eval vs train is observationally
-    identical, but the contract still matters: rollout validation must use eval
-    mode internally for determinism, and the caller's state must survive intact.
-    """
+    """Scoring restores model.training to whatever it was before the call."""
     val_path = tmp_path / "val.h5"
     train_path = tmp_path / "train.h5"
     _write_traj_h5(val_path)
@@ -275,15 +258,9 @@ def test_evaluator_preserves_caller_model_training_state(
 
 
 def test_curve_contract_is_one_indexed_steps_one_through_n() -> None:
-    """Curves cover rollout steps 1..N; anchor s reads ratios[s-1].
-
-    Locks in the contract that callers must slice off step 0 before calling
-    the scorer, and prevents future regressions where someone passes the full
-    0..N curve and silently shifts every anchor by one.
-    """
+    """Curves cover rollout steps 1..N; anchor s reads ratios[s-1]."""
     n = 199
-    # encode the rollout step into the value at each index so the test is
-    # readable: ratios[i] should expose step i+1.
+    # encode step into each index value so ratios[i] exposes step i+1
     model = np.arange(1, n + 1, dtype=np.float64)
     baseline = np.ones(n, dtype=np.float64)
 
@@ -307,12 +284,7 @@ def _write_stratified_h5(
     n_frames: int = 6,
     seed: int = 0,
 ) -> None:
-    """Write a small stratified trajectory file with two canonical bins.
-
-    `bin_id` controls how many trajectories are assigned to each bin and
-    in what order; the per-trajectory min pairwise distance is set
-    deterministically inside each bin's interval.
-    """
+    """Write a small stratified trajectory file with two canonical bins."""
     bins = (
         EncounterBin(name="extreme", lo=0.0, hi=0.05),
         EncounterBin(name="smooth", lo=0.05, hi=float("inf")),
@@ -392,12 +364,7 @@ def test_bucket_evaluator_score_returns_macro_and_per_bin(tmp_path: Path) -> Non
 
 
 def test_bucket_evaluator_macro_is_arithmetic_mean(tmp_path: Path) -> None:
-    """Macro must equal the unweighted arithmetic mean of populated per-bin scores.
-
-    Pinned explicitly so any future weighted-averaging would have to
-    deliberately update this assertion. Using imbalanced bin counts
-    (3 vs 1) so a sample-weighted mean would diverge from the macro.
-    """
+    """Macro is the unweighted arithmetic mean of populated per-bin scores."""
     val_path = tmp_path / "val.h5"
     train_path = tmp_path / "train.h5"
     _write_stratified_h5(val_path, bin_id=[0, 0, 0, 1], n_frames=8)

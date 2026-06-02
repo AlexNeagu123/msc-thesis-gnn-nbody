@@ -1,10 +1,4 @@
-"""Tests for evaluation/report_tables.py.
-
-Pure-function CSV + markdown generators. Builds typed reports for EGNN,
-HGNN, and the constant-velocity baseline from synthetic fixtures, writes
-artifacts to tmp_path, and asserts column order + content + markdown
-sections.
-"""
+"""Tests for evaluation/report_tables.py."""
 
 import copy
 import csv
@@ -27,13 +21,7 @@ HORIZON_FIXTURE_STEPS = [0, 1, 3, 5, 10, 25, 50, 100, 150, 199]
 
 
 def horizonify(report_dict: dict) -> dict:
-    """Rewrite rollout/energy curves so horizon plotters can find every anchor.
-
-    The base fixtures use step=[0, 1, 2, 3] which is enough for the
-    continuous figures and the tables but lacks horizons 5/10/25/50/100/150/199.
-    Tests that exercise Reporter.run() end-to-end or the new horizon
-    plotters need a step axis that covers HORIZON_ANCHORS.
-    """
+    """Rewrite rollout/energy curves so the step axis covers every HORIZON_ANCHORS value."""
     out = copy.deepcopy(report_dict)
     _rewrite_rollout_curves(out["rollout"]["curves"])
     if "encounter_bins" in out:
@@ -44,7 +32,7 @@ def horizonify(report_dict: dict) -> dict:
 
 
 def _rewrite_rollout_curves(curves: dict) -> None:
-    """Replace step + per-metric arrays in a rollout curves block, in place."""
+    """Replace step and per-metric arrays in a rollout curves block, in place."""
     n = len(HORIZON_FIXTURE_STEPS)
     curves["step"] = list(HORIZON_FIXTURE_STEPS)
     for metric in ("state_mse", "position_mse", "velocity_mse"):
@@ -55,7 +43,7 @@ def _rewrite_rollout_curves(curves: dict) -> None:
 
 
 def _rewrite_energy_curves(curves: dict) -> None:
-    """Replace step + per-metric arrays in an energy curves block, in place."""
+    """Replace step and per-metric arrays in an energy curves block, in place."""
     n = len(HORIZON_FIXTURE_STEPS)
     curves["step"] = list(HORIZON_FIXTURE_STEPS)
     curves["mean_finite"] = [0.001 * i for i in range(n)]
@@ -67,10 +55,8 @@ def _rewrite_energy_curves(curves: dict) -> None:
 def _shift_final_mse(report: dict, factor: float) -> dict:
     """Multiply the final-step median state and position MSE of every bin by `factor`.
 
-    Used to give the three fixtures distinct numeric signatures so the
-    tests can confirm CSV rows pull from the right report. Both state_mse
-    and position_mse are shifted because the headline now lives on
-    position MSE while the technical state-MSE columns remain in the CSV.
+    Gives the three fixtures distinct signatures so tests can confirm CSV rows pull from
+    the right report.
     """
     out = copy.deepcopy(report)
     for bin_entry in out["encounter_bins"]["by_name"].values():
@@ -137,7 +123,7 @@ def test_per_bin_summary_drops_baseline_score_columns(tmp_path: Path) -> None:
 
 
 def test_per_bin_summary_includes_baseline_physical_columns(tmp_path: Path) -> None:
-    """Baseline final MSE (position + state) and energy drift columns must be present."""
+    """Baseline final MSE (position and state) and energy drift columns must be present."""
     egnn, hgnn, baseline = _build_reports()
     path = tmp_path / "per_bin_summary.csv"
 
@@ -218,7 +204,7 @@ def test_key_timestep_summary_columns_are_pinned(tmp_path: Path) -> None:
 
 
 def test_key_timestep_summary_includes_baseline_columns(tmp_path: Path) -> None:
-    """The per-step CSV must include baseline position + state MSE columns."""
+    """The per-step CSV must include baseline position and state MSE columns."""
     egnn, hgnn, baseline = _build_reports()
     path = tmp_path / "key_timestep_summary.csv"
 
@@ -314,7 +300,7 @@ def test_report_markdown_includes_provenance_and_artifacts(tmp_path: Path) -> No
 
 
 def test_report_markdown_headline_uses_physical_metrics(tmp_path: Path) -> None:
-    """The headline table lives on raw position MSE + energy drift across all three models."""
+    """The headline table lives on raw position MSE and energy drift across all three models."""
     egnn, hgnn, baseline = _build_reports()
 
     write_report_markdown(

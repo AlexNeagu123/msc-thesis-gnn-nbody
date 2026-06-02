@@ -1,16 +1,7 @@
 """Test-set baseline envelope for stratified evaluation reports.
 
-Parallels training/rollout_score.py:RolloutScoreEvaluator but operates on
-the evaluation test set with bin slicing. The four deterministic baselines
-roll out exactly once per evaluation; per-bin envelopes are then derived
-by reusing the cached RolloutMSE objects via subset_rollout_mse, so the
-per-bin cost is a few array slices regardless of bin count.
-
-References:
-    - Training-time analogue: training/rollout_score.py (RolloutScoreEvaluator)
-    - Score math: training/rollout_score.py:compute_rollout_score
-    - Baselines: models/baselines.py
-    - Per-bin slicing: evaluation/metrics.py:subset_rollout_mse
+Rolls the four deterministic baselines out once, then derives per-bin envelopes by
+slicing the cached RolloutMSE objects. Evaluation-time analogue of training/rollout_score.py.
 """
 
 from __future__ import annotations
@@ -35,17 +26,8 @@ from models.baselines import (
 class BaselineEnvelopeComputer:
     """Per-bin baseline envelope built from a single round of test rollouts.
 
-    Usage:
-        computer = BaselineEnvelopeComputer(train_path, dt, device)
-        computer.fit(test_traj)
-        envelope = computer.envelope_for_mask(bin_mask)  # (n_steps - 1,)
-
-    `fit()` rolls out the four canonical deterministic baselines on the
-    full test set once and caches their RolloutMSE objects. Each
-    subsequent `envelope_for_mask(mask)` call slices those cached objects
-    by `mask`, takes the per-step median state MSE for each baseline, and
-    returns the per-step minimum across baselines (the "envelope"),
-    dropping step 0 to match the curve contract of compute_rollout_score.
+    Call fit(test_traj) once, then envelope_for_mask(mask) per bin; each returns the
+    per-step minimum-median state MSE across baselines, shape (n_steps - 1,).
     """
 
     def __init__(
@@ -75,9 +57,7 @@ class BaselineEnvelopeComputer:
     ) -> npt.NDArray[np.floating]:
         """Per-step minimum-median state MSE over the bin subset, dropping step 0.
 
-        Empty masks return an all-NaN curve so callers can short-circuit
-        the per-bin score computation without guarding against warnings;
-        the orchestrator skips empty bins anyway (baseline_ratios=None).
+        Empty masks return an all-NaN curve so callers can short-circuit cleanly.
         """
         if self._mse_per_baseline is None:
             msg = "fit() must be called before envelope_for_mask()"

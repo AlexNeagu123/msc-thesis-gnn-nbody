@@ -1,22 +1,4 @@
-"""Best-trajectory animation exporter for the comparison report.
-
-Renders one 3-panel MP4 + GIF per encounter bin: ground truth on the left,
-EGNN prediction in the middle, HGNN prediction on the right. The "best"
-trajectory in each bin is the one with the lowest joint mean rollout
-position MSE across the two models, picked over the same set of trajectories
-so the visual comparison is fair. Position MSE matches the audience-facing
-metric used by `evaluation.report` and `evaluation/visual_diagnostics.ipynb`,
-so the slide narrative stays coherent end to end.
-
-This module is intentionally separate from `evaluation/report.py` because
-it must load both trained checkpoints and run full autoregressive rollouts;
-the report layer is a pure post-processor over metrics.json.
-
-References:
-    - data/_io.py            : read_trajectories, Trajectories
-    - evaluation/metrics.py  : run_all_rollouts
-    - evaluation/evaluate.py : checkpoint -> model loading recipe reused below
-"""
+"""Render one 3-panel (truth | EGNN | HGNN) animation per encounter bin for the report."""
 
 import argparse
 from dataclasses import dataclass
@@ -30,14 +12,11 @@ import yaml
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter, writers
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
-from torch import nn
 
 from data._io import read_trajectories
 from data._types import Trajectories
+from evaluation._loader import load_trained_model
 from evaluation.metrics import run_all_rollouts
-from training._io import load_checkpoint, load_config
-from training._types import TrainConfig
-from training.train import build_model
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -49,14 +28,7 @@ _AXIS_PADDING = 0.5
 
 @dataclass(frozen=True)
 class BestTrajectory:
-    """One per-bin selection chosen for animation.
-
-    `egnn_mean_position_mse` / `hgnn_mean_position_mse` are the per-trajectory
-    rollout-averaged position MSE values used as the selection signal; they
-    are stored on the dataclass so the supertitle and downstream manifests
-    can surface the criterion used to pick this trajectory. Position MSE
-    matches the audience-facing metric used by `evaluation.report`.
-    """
+    """One per-bin trajectory chosen for animation, with the MSE that picked it."""
 
     bin_id: int
     bin_name: str
@@ -85,25 +57,9 @@ def select_best_trajectories(
     egnn_predicted: npt.NDArray[np.floating],
     hgnn_predicted: npt.NDArray[np.floating],
 ) -> list[BestTrajectory]:
-    """Return the trajectory with the lowest joint mean rollout position MSE in each bin.
+    """Pick, per bin, the trajectory minimising EGNN+HGNN mean rollout position MSE.
 
-    Selection criterion: for each trajectory `i`, compute the mean
-    position MSE over the full rollout (averaged across frames, particles,
-    and the two position components x and y) for both models. The "joint"
-    score is `mean_position_mse_egnn[i] + mean_position_mse_hgnn[i]`; the
-    winning trajectory in each encounter bin minimises that joint score.
-    Averaging over the full rollout (instead of only the final frame)
-    picks trajectories that look good throughout the video, not just at
-    the end. Position MSE (not state MSE) is the selector because that is
-    the audience-facing forecast metric in the rest of the report.
-
-    A trajectory is eligible iff both its per-model mean position MSE
-    values are finite; bins with no eligible candidate raise `ValueError`
-    since the caller asked for one selection per bin.
-
-    Both predicted arrays must have the same shape as `test_bundle.states`;
-    a mismatch is rejected up front before any MSE arithmetic so a wrong
-    rollout never silently broadcasts against the wrong trajectory set.
+    Only trajectories finite under both models are eligible; a bin with none raises.
     """
     _require_stratified_bundle(test_bundle)
     _require_matching_shapes(test_bundle.states, egnn_predicted, hgnn_predicted)
@@ -147,22 +103,10 @@ def select_trajectories_from_file(
     hgnn_predicted: npt.NDArray[np.floating],
     selection_path: Path,
 ) -> list[BestTrajectory]:
-    """Load a YAML mapping `{bin_name: traj_index}` and return matching BestTrajectory entries.
+    """Resolve a hand-edited YAML `{bin_name: traj_index}` into validated selections.
 
-    The file is intentionally small and hand-edited from the visualisation
-    notebook. Validation is strict: every bin in the test set must appear
-    exactly once; no unknown bin names; every index must be in range and
-    actually live in its declared bin; both EGNN and HGNN must produce a
-    finite mean rollout position MSE on that index. Returned selections are in
-    canonical encounter-bin order so downstream code can iterate them the
-    same way as the automatic selector's output.
-
-    File format (yaml.safe_load):
-        close: 368
-        near: 214
-        mid: 26
-        wide: 502
-        far: 467
+    Every bin must appear once, each index must live in its declared bin, and both
+    models must be finite there; returned in canonical bin order.
     """
     _require_stratified_bundle(test_bundle)
     _require_matching_shapes(test_bundle.states, egnn_predicted, hgnn_predicted)
@@ -208,22 +152,10 @@ def render_three_panel_animation(
     gif_path: Path,
     fps: int = DEFAULT_FPS,
 ) -> AnimationOutputs:
-    """Render one 3-panel animation (truth | EGNN | HGNN) and save MP4 + GIF.
+    """Render the 3-panel animation and save MP4 and GIF.
 
-    Axes are shared across the three panels and sized from the finite
-    positions in all three trajectories. Particle colors are stable across
-    panels so the eye tracks the same body left-to-right. The matplotlib
-    figure is always closed before this function returns, even when one of
-    the writers fails.
-
-    MP4 export depends on a system `ffmpeg`; when unavailable, the function
-    logs a clear error and returns `mp4_path=None` while still producing
-    the GIF. GIF export only fails if Pillow is missing (it ships with
-    matplotlib, so in practice this path is hit only by misconfigured envs).
-
-    `fps` must be at least 1; the renderer derives the frame interval as
-    `1000 // fps`, so a non-positive value would crash deep inside
-    FuncAnimation. Rejecting it here surfaces the misuse near the caller.
+    MP4 is skipped (returns `mp4_path=None`) when ffmpeg is unavailable; the GIF
+    still renders. `fps` must be >= 1.
     """
     if fps < 1:
         msg = f"fps must be >= 1; got {fps}"
@@ -278,12 +210,7 @@ class BestTrajectoryAnimator:
         fps: int = DEFAULT_FPS,
         selection_file: Path | None = None,
     ) -> None:
-        """Store every input path needed to reproduce the animations from scratch.
-
-        `selection_file` is optional; when set, `run()` skips the automatic
-        lowest-mean-MSE selector and renders exactly the trajectories named
-        in the YAML mapping `{bin_name: traj_index}`.
-        """
+        """Store input paths; `selection_file` overrides the automatic selector when set."""
         self.egnn_checkpoint = egnn_checkpoint
         self.hgnn_checkpoint = hgnn_checkpoint
         self.egnn_config = egnn_config
@@ -324,7 +251,7 @@ class BestTrajectoryAnimator:
         return torch.device(self.device)
 
     def _read_trajectories(self) -> Trajectories:
-        """Hook: subclass and override for tests that need to inject a fake test bundle."""
+        """Hook: override in tests to inject a fake test bundle."""
         return read_trajectories(self.test_path)
 
     def _rollout_for_model(
@@ -335,26 +262,10 @@ class BestTrajectoryAnimator:
         test_states: npt.NDArray[np.floating],
         torch_device: torch.device,
     ) -> npt.NDArray[np.floating]:
-        """Load one model from disk and run autoregressive rollouts on the test set."""
-        cfg = load_config(config_path)
-        model = self._load_model(cfg, checkpoint_path, torch_device)
+        """Load one model and run autoregressive rollouts on the test set."""
+        model = load_trained_model(config_path, checkpoint_path, torch_device).model
         logger.info("running %s rollouts on %d trajectories", model_name, test_states.shape[0])
         return run_all_rollouts(model, test_states, torch_device)
-
-    def _load_model(
-        self,
-        cfg: TrainConfig,
-        checkpoint_path: Path,
-        torch_device: torch.device,
-    ) -> nn.Module:
-        """Hook: build the configured model and load weights; tests override for DI."""
-        checkpoint = load_checkpoint(checkpoint_path, torch_device)
-        pos_std = checkpoint.pos_std if checkpoint.pos_std is not None else 1.0
-        vel_std = checkpoint.vel_std if checkpoint.vel_std is not None else 1.0
-        model = build_model(cfg, pos_std=pos_std, vel_std=vel_std).to(torch_device)
-        model.load_state_dict(checkpoint.model)
-        model.eval()
-        return model
 
     def _render_all(
         self,
@@ -404,8 +315,7 @@ def _per_trajectory_mean_position_mse(
 ) -> npt.NDArray[np.floating]:
     """Rollout-averaged position MSE per trajectory, used as the selection signal."""
     diff = predicted[..., :2] - test_traj[..., :2]
-    # NaN/inf propagates: a single non-finite step poisons the trajectory's mean,
-    # which is what the selector uses to discard divergent rollouts.
+    # non-finite steps propagate, so divergent rollouts surface as a non-finite mean
     return (diff**2).mean(axis=(1, 2, 3))
 
 
@@ -414,12 +324,7 @@ def _require_matching_shapes(
     egnn_predicted: npt.NDArray[np.floating],
     hgnn_predicted: npt.NDArray[np.floating],
 ) -> None:
-    """Reject prediction arrays whose shape disagrees with the test bundle.
-
-    NumPy can either raise late or, in some broadcast-compatible cases,
-    silently compute MSE against the wrong axis. Catching the mismatch at
-    the orchestrator boundary keeps the official videos honest.
-    """
+    """Reject prediction arrays whose shape disagrees with the test bundle."""
     if egnn_predicted.shape != truth_states.shape:
         msg = (
             "egnn_predicted shape does not match test_bundle.states; "

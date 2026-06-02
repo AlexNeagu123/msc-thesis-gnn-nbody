@@ -196,11 +196,9 @@ def test_integration_with_trainer(tmp_path: Path) -> None:
     """EGNN trains end-to-end through the Trainer pipeline."""
     rng = np.random.default_rng(42)
 
-    # create small HDF5 files with 5-feature state
     for name in ("train.h5", "val.h5"):
         trajectories = rng.normal(size=(5, 10, 3, 5))
-        # set mass column to 1.0
-        trajectories[:, :, :, 4] = 1.0
+        trajectories[:, :, :, 4] = 1.0  # mass = 1
         energies = rng.normal(size=(5, 10))
         with h5py.File(tmp_path / name, "w") as f:
             f.create_dataset("trajectories", data=trajectories)

@@ -1,11 +1,4 @@
-"""Serialization for evaluation reports.
-
-Owns the metrics.json / summary.csv I/O boundary so producers and
-notebook consumers never touch raw json/csv calls.
-
-References:
-    - Report schema: evaluation/_types.py
-"""
+"""Serialization for evaluation reports: the metrics.json / summary.csv I/O boundary."""
 
 import csv
 import json

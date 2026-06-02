@@ -1,10 +1,4 @@
-"""Tests for evaluation/report_figures.py.
-
-The figures module exposes four public presentation plotters: continuous
-rollout MSE per bin, continuous energy drift per bin, horizon-anchor MSE
-per bin, and horizon-anchor energy drift per bin. All four are fed by
-EGNN + HGNN + constant-velocity baseline reports.
-"""
+"""Tests for evaluation/report_figures.py."""
 
 import math
 from pathlib import Path
@@ -121,12 +115,7 @@ def test_is_bottom_panel_handles_legend_at_last_cell() -> None:
 
 
 def test_plot_rollout_mse_presentation_labels_only_outer_panels(tmp_path: Path) -> None:
-    """Inner panels must not repeat the axis labels carried by the outer edge.
-
-    Renders the presentation figure to a tmp file and inspects every axis
-    on the produced figure: only column-0 panels should carry the y label
-    and only column-bottom panels should carry the x label.
-    """
+    """Inner panels must not repeat the axis labels carried by the outer edge."""
     import matplotlib.pyplot as plt
 
     egnn, hgnn, baseline = _reports()
@@ -134,8 +123,7 @@ def test_plot_rollout_mse_presentation_labels_only_outer_panels(tmp_path: Path) 
 
     plot_rollout_mse_presentation(egnn, hgnn, baseline, (tmp_path / "r.png",))
 
-    # The function closes its figure, so re-render against the same fixtures
-    # while keeping the figure open to inspect labels.
+    # re-render with the figure kept open to inspect labels
     from evaluation.report_figures import (
         _is_bottom_panel,
         _is_leftmost,

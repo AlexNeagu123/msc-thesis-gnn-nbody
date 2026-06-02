@@ -1,19 +1,6 @@
-"""Pure classifier helpers for encounter-severity stratification.
-
-A trajectory's "encounter severity" is summarised by its minimum pairwise
-distance over the full time horizon. This module owns:
-
-    - the canonical bin definition (`DEFAULT_ENCOUNTER_BINS`);
-    - the d_min computation;
-    - mapping a d_min value to a bin name;
-    - rounding a real-valued distribution to integer per-bin counts.
-
-These helpers are deliberately free of REBOUND, h5py, and config types so
-the stratified generator (Block 4) and downstream evaluators can import
-them without pulling in the simulation stack.
+"""Pure helpers for encounter-severity stratification by minimum pairwise distance.
 
 References:
-    - data/_types.py : EncounterBin
     - Largest-remainder method: https://en.wikipedia.org/wiki/Largest_remainder_method
 """
 
@@ -37,18 +24,9 @@ DEFAULT_ENCOUNTER_BINS: tuple[EncounterBin, ...] = (
 
 
 def min_pairwise_distance_over_time(states: np.ndarray) -> float:
-    """Return the minimum (i<j) Euclidean distance over all timesteps.
+    """Minimum (i<j) Euclidean distance over all timesteps, using the first 2 coords.
 
-    Only the first two coordinates of each particle are used so the
-    helper works for both 2-D state vectors `[x, y]` and full state
-    vectors `[x, y, vx, vy, m, ...]`.
-
-    Args:
-        states: array of shape (n_steps, n_particles, dim) with dim >= 2
-            and n_particles >= 2.
-
-    Raises:
-        ValueError if the shape is wrong or the particle count is < 2.
+    Expects states of shape (n_steps, n_particles, dim) with dim >= 2 and n_particles >= 2.
     """
     if states.ndim != 3:
         msg = f"states must be 3D (n_steps, n_particles, >=2); got shape {states.shape}"
@@ -75,13 +53,9 @@ def min_pairwise_distance_over_time(states: np.ndarray) -> float:
 
 
 def assign_encounter_bin(distance: float, bins: Sequence[EncounterBin]) -> str:
-    """Return the name of the bin whose [lo, hi) interval contains `distance`.
+    """Name of the bin whose half-open [lo, hi) interval contains `distance`.
 
-    Half-open semantics: a value sitting on a boundary belongs to the
-    upper bin. Non-finite distances (NaN, +/-inf) are rejected because
-    they cannot be unambiguously placed under [lo, hi). A distance that
-    falls outside every supplied bin also raises, which catches misuse
-    such as forgetting a top sentinel `hi=inf` bin.
+    Boundary values fall in the upper bin; non-finite or out-of-range distances raise.
     """
     if not math.isfinite(distance):
         msg = f"distance must be finite; got {distance!r}"
@@ -94,16 +68,9 @@ def assign_encounter_bin(distance: float, bins: Sequence[EncounterBin]) -> str:
 
 
 def target_counts_from_distribution(total: int, distribution: dict[str, float]) -> dict[str, int]:
-    """Round a real-valued distribution to integer counts that sum to `total`.
+    """Round a weighted distribution to integer counts summing to `total`.
 
-    Uses the largest-remainder method: each bin first gets `floor(total *
-    weight / sum(weights))`, then the remaining surplus is distributed
-    one-by-one to bins with the largest fractional parts. Fractional ties
-    are broken by the insertion order of `distribution`, so identical
-    inputs always produce identical outputs.
-
-    Raises ValueError on negative `total`, an empty distribution,
-    negative weights, or a zero (or negative) total weight.
+    Largest-remainder method with insertion-order tie-breaking, so it is deterministic.
     """
     if total < 0:
         msg = f"total must be >= 0; got {total}"
@@ -126,8 +93,7 @@ def target_counts_from_distribution(total: int, distribution: dict[str, float]) 
     counts = {name: int(v) for name, v in raw.items()}
     remainder = total - sum(counts.values())
 
-    # stable sort on negative fractional part: largest first; ties keep
-    # insertion order, so repeat calls are deterministic.
+    # largest fractional part first; ties keep insertion order for determinism
     fractional = [(name, raw[name] - counts[name]) for name in distribution]
     fractional.sort(key=lambda kv: -kv[1])
 

@@ -1,12 +1,6 @@
-"""Run the official evaluation pipeline against a deterministic baseline.
+"""Run the evaluation pipeline against a deterministic baseline (no checkpoint/config).
 
-Mirrors evaluation/evaluate.py without depending on a checkpoint or training
-config. Writes the same metrics.json and summary.csv artifacts so baseline
-results sit alongside trained-model results in the thesis tables.
-
-References:
-    - models/baselines.py for the baseline implementations.
-    - evaluation/evaluate.py for the metric pipeline this script reuses.
+Writes the same metrics.json/summary.csv as evaluation/evaluate.py.
 """
 
 import argparse
@@ -67,9 +61,7 @@ def evaluate_baseline(
     test_traj = test_bundle.states
     n_traj, n_frames, n_particles, _state_dim = test_traj.shape
 
-    # Stratified test files require train_path so the baseline-envelope path can
-    # fit MeanVelocityBaseline / MeanStateBaseline; silently dropping the per-bin
-    # ratio block would produce confusingly incomplete reports.
+    # stratified files need train_path to fit the baseline envelope for per-bin ratios
     if test_bundle.encounter_bin_id is not None and train_path is None:
         msg = "stratified baseline ratios require --train-path to fit baseline envelope"
         raise ValueError(msg)

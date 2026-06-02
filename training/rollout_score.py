@@ -1,23 +1,10 @@
 """Baseline-normalized rollout scoring for checkpoint selection.
 
-The score evaluates how well a model rolls out on validation relative to
-the strongest deterministic baseline at every step, factoring out the
-absolute MSE scale so it is comparable across runs.
+Per-step ratio R_s = (model_median_mse_s + eps) / (baseline_envelope_s + eps);
+scalar score = mean_s log(R_s + eps), lower is better.
 
-Per-step ratio (eps in both terms so exact ties yield R = 1 exactly):
-    R_s = (model_median_state_mse_s + eps) / (baseline_envelope_s + eps)
-
-Scalar score (lower is better):
-    score = mean over s of log(R_s + eps)
-
-Curve contract: `model_curve` and `baseline_envelope` are indexed by
-rollout step s = 1..N. They must NOT include step 0 (the initial state,
-which is identical to the ground truth and would trivially beat every
-baseline). Anchor step s reads `ratios[s - 1]`.
-
-References:
-    - Baselines: models/baselines.py
-    - Per-step rollout MSE pipeline: evaluation/metrics.py
+Curves are indexed by step s = 1..N and must exclude step 0 (trivially zero MSE);
+anchor step s reads ratios[s - 1].
 """
 
 from __future__ import annotations
@@ -52,18 +39,10 @@ def compute_rollout_score(
     eps: float = DEFAULT_EPS,
     anchor_steps: tuple[int, ...] = DEFAULT_ANCHOR_STEPS,
 ) -> RolloutScore:
-    """Compute baseline-normalized rollout score and diagnostics.
+    """Compute the baseline-normalized rollout score and step-resolved diagnostics.
 
-    Args:
-        model_curve: per-step median state MSE for the model, shape (n_steps,).
-        baseline_envelope: per-step minimum median state MSE across the
-            deterministic baselines, shape (n_steps,). Must match model_curve.
-        eps: stabiliser for the division and the log argument.
-        anchor_steps: 1-indexed step numbers to record as named ratios for
-            readability. Steps beyond the curve length are silently dropped.
-
-    Returns:
-        RolloutScore with the scalar score and step-resolved diagnostics.
+    `model_curve` and `baseline_envelope` are matching 1-D per-step curves; anchor_steps
+    are 1-indexed and silently dropped past the curve length.
     """
     if model_curve.shape != baseline_envelope.shape:
         msg = (
@@ -112,14 +91,8 @@ def compute_rollout_score(
 class RolloutScoreEvaluator:
     """Score a model against a cached baseline envelope on a fixed val set.
 
-    Builds the baseline envelope lazily on first access and reuses it for
-    every subsequent `score(model)` call, so the four deterministic baselines
-    only roll out once per training run. The val trajectories are also
-    cached after the first read.
-
-    The caller is responsible for placing the model on the right device.
-    Eval-mode handling is owned by `score`, which toggles the model into
-    eval and restores its prior training state on the way out.
+    The envelope and val trajectories are built lazily once and reused for every call;
+    the caller owns model device placement.
     """
 
     def __init__(
@@ -146,20 +119,13 @@ class RolloutScoreEvaluator:
 
     @property
     def baseline_envelope(self) -> np.ndarray:
-        """Per-step minimum median state MSE across deterministic baselines.
-
-        Shape (n_steps,) covering rollout steps 1..N. Computed once and cached.
-        """
+        """Per-step minimum median state MSE across baselines, steps 1..N (cached)."""
         if self._envelope is None:
             self._envelope = self._build_envelope()
         return self._envelope
 
     def score(self, model: nn.Module) -> RolloutScore:
-        """Run the model on val and return its baseline-normalized rollout score.
-
-        Toggles the model into eval mode for the rollout and restores its
-        prior training state on exit, even if the rollout raises.
-        """
+        """Run the model on val and return its rollout score; restores train/eval state."""
         was_training = model.training
         model.eval()
         try:
@@ -189,37 +155,18 @@ def _curve_for_model(
     val_traj: np.ndarray,
     device: torch.device,
 ) -> np.ndarray:
-    """Return per-step median state MSE for steps 1..N (drops the trivial step 0).
-
-    `run_all_rollouts` returns a tensor whose step-0 slice is the unchanged
-    initial state, giving zero MSE there. Slicing it off matches the
-    `compute_rollout_score` curve contract.
-    """
+    """Per-step median state MSE for steps 1..N, dropping the trivial step-0 zero."""
     predicted = run_all_rollouts(model, val_traj, device)
     rollout_mse = compute_rollout_mse(val_traj, predicted)
     return rollout_mse.state.median[1:]
 
 
 class BucketRolloutScoreEvaluator:
-    """Bucket-aware rollout score against a stratified validation set.
+    """Bucket-aware rollout score on a stratified val set (sibling of RolloutScoreEvaluator).
 
-    Sibling of `RolloutScoreEvaluator` for `checkpoint_metric =
-    "bucket_macro_rollout_score"`. The val file must carry the
-    stratification metadata produced by `data/generate.py`; otherwise
-    construction raises immediately so misconfigured runs fail before
-    epoch 1, not after.
-
-    Each call to `score(model)` runs the model on the full val set
-    once, computes a bin-restricted rollout curve via subset_rollout_mse,
-    looks up the per-bin baseline envelope, and folds the per-bin
-    `RolloutScore` objects into a `BucketRolloutScore` whose `macro` is
-    the unweighted arithmetic mean of the populated per-bin scores.
-    Empty bins are skipped from the macro (and the per-bin dict);
-    production stratified val files have all bins populated.
-
-    The four deterministic baselines roll out exactly once across the
-    entire training run via the cached `BaselineEnvelopeComputer`. Per-
-    bin envelopes are derived by slicing the cached RolloutMSE objects.
+    Construction fails fast if the val file lacks stratification. Each call rolls the model
+    out once, scores every non-empty bin against its cached baseline envelope, and
+    macro-averages (unweighted) over them.
     """
 
     def __init__(
@@ -269,11 +216,7 @@ class BucketRolloutScoreEvaluator:
         return self._envelope_computer
 
     def score(self, model: nn.Module) -> BucketRolloutScore:
-        """Run the model on val once and return its bucket-aware rollout score.
-
-        Toggles the model into eval mode for the rollout and restores its
-        prior training state on exit, even if the rollout raises.
-        """
+        """Run the model on val once and return its bucket-aware score; restores train/eval state."""
         was_training = model.training
         model.eval()
         try:

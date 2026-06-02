@@ -1,19 +1,7 @@
 """Comparison report generator: turn three metrics.json files into thesis artifacts.
 
-The report layer is a pure post-processor on the JSON produced by
-`evaluation.evaluate` and `evaluation.evaluate_baseline`. It loads three
-`EvaluationReport`s (EGNN, HGNN, constant-velocity baseline), validates
-that they share the same encounter-bin layout and rollout horizon, and
-orchestrates figure + table + markdown generation.
-
-No model loading, no rollout recomputation, no GPU. This keeps the report
-fast to iterate on and decoupled from the evaluator's expensive path.
-
-References:
-    - Source schema: evaluation/_types.py (EvaluationReport, EncounterBinsReport)
-    - Producers:     evaluation/evaluate.py, evaluation/evaluate_baseline.py
-    - Figures:       evaluation/report_figures.py
-    - Tables:        evaluation/report_tables.py
+A pure post-processor over the EGNN/HGNN/baseline reports (no model loading or rollouts):
+validates they are comparable, then writes figures, tables, and report.md.
 """
 
 import argparse
@@ -65,7 +53,7 @@ class Reporter:
         self.tables_dir = output_dir / "tables"
 
     def run(self) -> None:
-        """Load reports, validate, emit the output skeleton, and write tables + markdown."""
+        """Load reports, validate, emit the output skeleton, and write tables and markdown."""
         egnn, hgnn, baseline = self._load_reports()
         self._validate_compatible(egnn, hgnn, baseline)
         self._setup_output()
@@ -179,11 +167,7 @@ class Reporter:
     ) -> None:
         """Reject report triples that cannot be plotted side-by-side.
 
-        Each contract is a separate method so a failure pinpoints the
-        exact mismatch. Order matters: structural prerequisites first
-        (bins block present, bin layout identical), then identity-of-test-
-        population (same n_traj/n_frames/n_particles, same per-bin counts
-        and d_min summaries), then step-axis equality used by the figures.
+        Each check is its own method so a failure pinpoints the exact mismatch.
         """
         self._require_bins_present(egnn, hgnn, baseline)
         self._require_baseline_is_constant_velocity(baseline)
@@ -214,14 +198,7 @@ class Reporter:
             raise ValueError(msg)
 
     def _require_baseline_is_constant_velocity(self, baseline: EvaluationReport) -> None:
-        """Reject any baseline other than the official constant-velocity one.
-
-        The legend and markdown headline label the third curve "constant
-        velocity" verbatim, so a mean_state or persistence report would
-        produce a misleading artifact. Caught at the orchestrator boundary
-        because the producer (evaluate_baseline.py) tags model_name with
-        the exact baseline kind it ran.
-        """
+        """Reject any baseline other than constant-velocity (the figures label it verbatim)."""
         actual = baseline.metadata.model_name
         expected = "baseline_constant_velocity"
         if actual != expected:
@@ -254,13 +231,10 @@ class Reporter:
         hgnn: EvaluationReport,
         baseline: EvaluationReport,
     ) -> None:
-        """Reject report triples evaluated against different test populations.
+        """Reject reports evaluated on different test populations.
 
-        Bin edges can be identical across regenerated test sets, so a
-        layout-only check is not enough. This validator compares the
-        observable per-population signals that the evaluator records:
-        metadata n_trajectories / n_frames / n_particles, the per-bin
-        trajectory count, and the per-bin d_min summary statistics.
+        Bin edges can match across regenerated sets, so this also checks metadata shape,
+        per-bin counts, and per-bin d_min summaries.
         """
         for field in ("n_trajectories", "n_frames", "n_particles"):
             self._require_metadata_field_matches(field, egnn, hgnn, baseline)
@@ -319,12 +293,7 @@ class Reporter:
         hgnn_bin: EncounterBinReport,
         baseline_bin: EncounterBinReport,
     ) -> None:
-        """Require the d_min summary statistics to match exactly across reports.
-
-        Identity comparison is safe: when the test bundle is the same, the
-        evaluator's summary code produces bit-identical floats; any drift
-        means the test populations differ, which is what we want to catch.
-        """
+        """Require the d_min summary statistics to match exactly across reports."""
         egnn_sig = _d_min_signature(egnn_bin)
         hgnn_sig = _d_min_signature(hgnn_bin)
         baseline_sig = _d_min_signature(baseline_bin)
@@ -341,12 +310,7 @@ class Reporter:
         hgnn: EvaluationReport,
         baseline: EvaluationReport,
     ) -> None:
-        """Require the top-level rollout step axis is identical, not just same-length.
-
-        Plotting indexes EGNN's step array against HGNN and baseline data;
-        a length-only check would let two reports with the same horizon but
-        different step values silently misplot.
-        """
+        """Require the top-level rollout step axis is identical (values, not just length)."""
         egnn_steps = tuple(egnn.rollout.curves.step)
         hgnn_steps = tuple(hgnn.rollout.curves.step)
         baseline_steps = tuple(baseline.rollout.curves.step)
@@ -363,12 +327,7 @@ class Reporter:
         hgnn: EvaluationReport,
         baseline: EvaluationReport,
     ) -> None:
-        """Require per-bin rollout and energy step arrays match across reports.
-
-        The figures sample EGNN's per-bin step array for HGNN and baseline
-        curves; same-length-different-values would silently misplot, just
-        like the top-level case.
-        """
+        """Require per-bin rollout and energy step arrays match across reports (values)."""
         egnn_bins = _require_bins_block(egnn)
         hgnn_bins = _require_bins_block(hgnn)
         baseline_bins = _require_bins_block(baseline)
@@ -411,15 +370,9 @@ class Reporter:
         self.tables_dir.mkdir(exist_ok=True)
 
     def _load_chunked_section(self) -> ChunkedReportSection | None:
-        """Detect `<output_dir>/chunked/`; build the report-md section if the full manifest is present.
+        """Build the optional chunked/ report section, but only if its full manifest is present.
 
-        The chunked sub-directory is optional. We attach the section only
-        when every artifact the section links to is present, so the main
-        report never points at a stale or missing chunked figure / CSV /
-        markdown. A partial manifest logs a warning and falls back to a
-        report without the section. A present-but-malformed endpoints CSV
-        causes `read_endpoint_rows` to raise so we fail loudly instead of
-        emitting a hollow section.
+        A partial manifest is skipped with a warning; a malformed endpoints CSV raises.
         """
         chunked_dir = self.output_dir / "chunked"
         required = {

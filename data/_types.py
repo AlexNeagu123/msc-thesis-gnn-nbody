@@ -35,11 +35,7 @@ class SplitConfig:
 
 @dataclass
 class DataGenConfig:
-    """Top-level data generation configuration.
-
-    `stratified` is None for uniform generation; when present, it has
-    been fully validated by `StratifiedConfig.__post_init__`.
-    """
+    """Top-level data generation configuration; `stratified` is None for uniform generation."""
 
     simulation: SimulationParams
     splits: list[SplitConfig]
@@ -92,12 +88,7 @@ class TrajectoryMetadata:
 
 @dataclass(frozen=True)
 class EncounterBin:
-    """One bucket in a stratified encounter-severity binning.
-
-    A trajectory belongs to this bin when its true minimum pairwise
-    distance d_min satisfies `lo <= d_min < hi` (half-open interval).
-    Top-of-range bins use `hi=float("inf")` to extend to the half-line.
-    """
+    """One encounter-severity bucket: matches d_min in the half-open [lo, hi)."""
 
     name: str
     lo: float
@@ -106,18 +97,11 @@ class EncounterBin:
 
 @dataclass(frozen=True)
 class StratifiedConfig:
-    """Stratified-generation contract: bin definitions + per-split weights.
+    """Bin definitions and per-split weights, validated in __post_init__.
 
-    Constructing this dataclass succeeds only when the bins form a
-    contiguous half-open partition of `[0, inf)` and every distribution
-    keys exactly match the bin names with finite, non-negative weights
-    that sum positive. Block 4's generator can therefore treat the
-    object as fully validated and complete.
-
-    `max_attempts` optionally overrides the per-split candidate-attempt
-    cap. None falls back to the generator's safe default (currently
-    `max(10000, n_trajectories * 2000)`); set explicitly when a target
-    bin is rare under the simulator's natural distribution.
+    Bins must form a contiguous half-open partition of [0, inf); each distribution
+    must key exactly to the bin names. `max_attempts` overrides the per-split candidate
+    cap (None uses the generator default).
     """
 
     bins: tuple[EncounterBin, ...]
@@ -137,9 +121,7 @@ class StratifiedConfig:
             or not isinstance(self.max_attempts, int)
             or self.max_attempts < 1
         ):
-            # bools subclass int but `True` shouldn't read as a cap of 1; floats
-            # (incl. nan/+inf) and strings would survive `< 1` (NaN comparisons are
-            # always False), so reject them at the type level too.
+            # reject bool/float/str at the type level: True reads as 1 and NaN survives `< 1`
             msg = f"max_attempts must be an integer >= 1 when set; got {self.max_attempts!r}"
             raise ValueError(msg)
 
@@ -206,11 +188,7 @@ class StratifiedConfig:
 
     @staticmethod
     def from_dict(d: dict) -> StratifiedConfig | None:
-        """Parse a stratified-section dict; return None when disabled or absent.
-
-        The `enabled` key acts as the on/off switch and is consumed here
-        so downstream code only ever sees a fully validated config.
-        """
+        """Parse a stratified-section dict; return None when `enabled` is false or absent."""
         if not isinstance(d, dict):
             msg = f"stratified must be a mapping; got {type(d).__name__}"
             raise ValueError(msg)
@@ -259,16 +237,10 @@ class StratifiedConfig:
 
 @dataclass
 class Trajectories:
-    """Typed bundle for the contents of one trajectory HDF5 file.
+    """Typed bundle for one trajectory HDF5 file.
 
-    `metadata` is optional because test fixtures and older files may
-    omit the metadata group; production files always include it.
-
-    The four `encounter_*` / `min_pairwise_distance` / `encounter_bins`
-    fields form an atomic stratification group: either all four are
-    populated (a stratified dataset) or all four are None (uniform /
-    non-stratified). The persistence boundary in `data/_io.py` enforces
-    this contract; in-memory construction does not.
+    The four stratification fields (encounter_*, min_pairwise_distance, encounter_bins)
+    are atomic: all set (stratified) or all None (uniform). data/_io.py enforces this.
     """
 
     states: np.ndarray  # (n_trajectories, n_steps, n_particles, 5)

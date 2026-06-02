@@ -1,23 +1,9 @@
 """Presentation-grade figures for the comparison report.
 
-Public plotters cover continuous dynamics and fixed-horizon snapshots
-for the two audience-facing physical metrics:
-    - `plot_rollout_mse_presentation`        : position MSE curve per bin
-    - `plot_energy_drift_presentation`       : |dE/E_0| curve per bin
-    - `plot_horizon_snapshot_by_bin`         : position MSE + energy bars at one horizon
-
-Position MSE is the headline forecast-quality metric because it maps
-directly to trajectory accuracy on the coordinate plane. State and
-velocity MSE remain available in `metrics.json` / technical CSVs but
-are not surfaced in figures.
-
-Each plotter accepts three typed `EvaluationReport`s (EGNN, HGNN,
-constant-velocity baseline). Matplotlib owns rendering and PDF export.
-Seaborn is used only to apply a consistent `whitegrid`/`talk` theme.
-
-References:
-    - Source schema: evaluation/_types.py (EvaluationReport)
-    - Orchestrator:  evaluation/report.py (Reporter.run)
+Public plotters, each taking the EGNN, HGNN, and baseline reports:
+    - plot_rollout_mse_presentation  : position MSE curve per bin
+    - plot_energy_drift_presentation : |dE/E_0| curve per bin
+    - plot_horizon_snapshot_by_bin   : position MSE and energy bars at one horizon
 """
 
 from collections.abc import Iterable
@@ -59,13 +45,7 @@ _DRIFT_REFERENCE_LEVEL = 1.0
 
 
 def _apply_figure_style() -> None:
-    """Pin a seaborn theme suitable for slides and the thesis PDF, once per process.
-
-    `style="whitegrid"` puts a soft grid under the curves so audiences can read
-    intermediate values at a glance; `context="talk"` upsizes fonts so the
-    figure remains legible when projected. Idempotent so repeated calls during
-    a single `Reporter.run` are free.
-    """
+    """Pin the seaborn whitegrid/talk theme for slides and PDF, once per process (idempotent)."""
     global _STYLE_APPLIED
     if _STYLE_APPLIED:
         return
@@ -87,12 +67,7 @@ def plot_rollout_mse_presentation(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Headline rollout figure: median position MSE vs step, per encounter bin.
-
-    2x3 grid of panels. Each panel carries three curves (EGNN, HGNN,
-    constant-velocity baseline) on a log y-axis with linear x. The bottom-
-    right cell holds the shared legend.
-    """
+    """Headline rollout figure: per-bin grid of median position MSE vs step (log y)."""
     _apply_figure_style()
     bin_names, panels = _per_bin_panels(egnn, hgnn, baseline)
     n_bins = len(bin_names)
@@ -112,7 +87,7 @@ def plot_rollout_mse_presentation(
 
     _render_legend_panel(axes[n_bins])
     _hide_unused_panels(axes, used=n_bins + 1)
-    _suptitle_with_padding(fig, "Rollout position MSE by encounter bin")
+    _suptitle_with_padding(fig, "Rollout position MSE by distance cluster")
     _save_and_close(fig, output_paths)
 
 
@@ -122,12 +97,7 @@ def plot_energy_drift_presentation(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Headline energy-drift figure: median |dE/E_0| vs step, per bin.
-
-    Same 2x3 layout as the MSE figure. Log-log axes spread the early-step
-    behaviour where the models diverge from the baseline. A horizontal
-    dashed reference at |dE/E_0| = 1 marks full-order energy violation.
-    """
+    """Headline energy-drift figure: per-bin grid of median |dE/E_0| vs step (log-log)."""
     _apply_figure_style()
     bin_names, panels = _per_bin_panels(egnn, hgnn, baseline)
     n_bins = len(bin_names)
@@ -147,7 +117,7 @@ def plot_energy_drift_presentation(
 
     _render_legend_panel(axes[n_bins])
     _hide_unused_panels(axes, used=n_bins + 1)
-    _suptitle_with_padding(fig, "Relative energy drift by encounter bin")
+    _suptitle_with_padding(fig, "Relative energy drift by distance cluster")
     _save_and_close(fig, output_paths)
 
 
@@ -266,7 +236,7 @@ def plot_horizon_snapshot_by_bin(
         title="Models",
         title_fontsize=17,
     )
-    fig.suptitle(f"Rollout horizon {horizon}: accuracy and energy by encounter bin", y=0.995)
+    fig.suptitle(f"Rollout horizon {horizon}: accuracy and energy by distance cluster", y=0.995)
     fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.925), h_pad=1.25, w_pad=1.8)
     _save_and_close(fig, output_paths)
 
@@ -277,19 +247,14 @@ def plot_horizon_mse_by_bin(
     baseline: EvaluationReport,
     output_paths: Iterable[Path],
 ) -> None:
-    """Headline horizon-MSE figure: exact median position MSE at fixed horizons.
-
-    Rows are encounter bins; columns are models. Splitting models into
-    columns gives each marker enough room for its numeric label while
-    keeping the horizon axis aligned across all panels.
-    """
+    """Headline horizon-MSE figure: median position MSE at fixed horizons (rows=bins, cols=models)."""
     _plot_horizon_metric_grid(
         egnn,
         hgnn,
         baseline,
         output_paths,
         metric=_HorizonMetric.POSITION_MSE,
-        title="Rollout position MSE at fixed horizons by encounter bin",
+        title="Rollout position MSE at fixed horizons by distance cluster",
     )
 
 
@@ -306,7 +271,7 @@ def plot_horizon_energy_drift_by_bin(
         baseline,
         output_paths,
         metric=_HorizonMetric.ENERGY_DRIFT,
-        title="Relative energy drift at fixed horizons by encounter bin",
+        title="Relative energy drift at fixed horizons by distance cluster",
     )
 
 
@@ -442,8 +407,8 @@ def _metric_bar_title(metric: _HorizonMetric, *, step: int | None) -> str:
     """Human-readable title for grouped metric bar charts."""
     prefix = "Final-step" if step is None else f"Rollout step {step}"
     if metric is _HorizonMetric.POSITION_MSE:
-        return f"{prefix} median position MSE by encounter bin"
-    return f"{prefix} relative energy drift by encounter bin"
+        return f"{prefix} median position MSE by distance cluster"
+    return f"{prefix} relative energy drift by distance cluster"
 
 
 def _bin_label(name: str, count: int) -> str:
@@ -585,21 +550,9 @@ def _per_bin_panels(
 
 
 def _make_grid(n_bins: int, *, scale: float = 1.0) -> tuple[plt.Figure, list[plt.Axes], int]:
-    """Build a 2-row grid sized to hold `n_bins` panels plus one legend cell.
+    """Build a 2-row shared-axis grid for `n_bins` panels plus one legend cell.
 
-    Column count is `ceil((n_bins + 1) / 2)` so the legend always slots
-    naturally into the bottom row. With the canonical 5-bin layout this
-    collapses to the 2x3 grid intended for 16:9 slides; smaller bin counts
-    (used by the test fixtures) yield a narrower figure. Returns the
-    column count so callers can decide which panels carry axis labels.
-
-    `scale` lets the horizon plotters bump the canvas so early-horizon
-    tick labels (3, 5, 10) stay readable without crowding.
-
-    `sharex` and `sharey` link all axes so the figure tells a single story
-    on a common scale; the renderers still set tick label visibility on
-    bottom / leftmost panels explicitly because matplotlib's default
-    `label_outer` heuristic does not account for the legend cell.
+    Columns are sized so the legend slots into the bottom row; returns the column count.
     """
     cols = max(2, (n_bins + 2) // 2)
     rows = 2
@@ -651,13 +604,7 @@ def _apply_outer_labels(
     is_leftmost: bool,
     is_bottom: bool,
 ) -> None:
-    """Restrict axis labels and outer tick labels to the grid's outer edge.
-
-    `sharex` / `sharey` already link the data limits but matplotlib's
-    automatic tick-label hiding does not account for the legend cell
-    sitting in the bottom-right; force tick visibility explicitly so a
-    top-row panel with no neighbour below still shows its x ticks.
-    """
+    """Restrict axis labels and ticks to the grid's outer edge (legend cell breaks the default)."""
     if is_leftmost:
         ax.set_ylabel(y_label)
         ax.tick_params(axis="y", labelleft=True)
@@ -680,12 +627,7 @@ def _render_mse_panel(
     is_leftmost: bool,
     is_bottom: bool,
 ) -> None:
-    """Plot one MSE panel: three curves on log-y axes, linear x.
-
-    Axis labels and outer tick labels are restricted to the panels on the
-    outer edge of the grid (leftmost column / bottom of each column) so
-    the figure does not repeat the same label five times.
-    """
+    """Plot one MSE panel: three curves on log-y, linear x; labels only on outer-edge panels."""
     steps = np.asarray(egnn_bin.rollout.curves.step, dtype=int)
     egnn_curve = _curve_to_array(egnn_bin.rollout.curves.position_mse.median)
     hgnn_curve = _curve_to_array(hgnn_bin.rollout.curves.position_mse.median)
@@ -722,11 +664,7 @@ def _render_drift_panel(
     is_leftmost: bool,
     is_bottom: bool,
 ) -> None:
-    """Plot one drift panel: three curves on log-log axes with a y=1 reference.
-
-    Axis labels and outer tick labels are restricted to the panels on the
-    outer edge of the grid so the slide stays uncluttered.
-    """
+    """Plot one drift panel: three curves on log-log with a y=1 reference; outer-edge labels only."""
     steps = np.asarray(egnn_bin.energy.physical.curves.step, dtype=int)
     egnn_curve = _curve_to_array(egnn_bin.energy.physical.curves.median)
     hgnn_curve = _curve_to_array(hgnn_bin.energy.physical.curves.median)
@@ -825,14 +763,7 @@ def _render_horizon_panel(
     metric: _HorizonMetric,
     show_x_label: bool,
 ) -> None:
-    """Plot all three model series for one encounter bin.
-
-    X positions are categorical so the early horizons (3, 5, 10) get the
-    same visual real estate as the late ones; tick labels show the actual
-    horizon numbers. The MSE view uses a linear y-axis so values are read
-    directly; the energy-drift view uses a log y-axis because EGNN spans
-    multiple orders of magnitude.
-    """
+    """Plot all three model series for one bin over categorical horizons (MSE linear, drift log)."""
     x = np.arange(len(HORIZON_ANCHORS))
     egnn_y = _horizon_values(egnn_bin, metric=metric, label=f"EGNN bin={bin_name!r}")
     hgnn_y = _horizon_values(hgnn_bin, metric=metric, label=f"HGNN bin={bin_name!r}")
@@ -984,13 +915,7 @@ def _horizon_values(
     metric: _HorizonMetric,
     label: str,
 ) -> np.ndarray:
-    """Pluck the `HORIZON_ANCHORS` values out of a per-bin curve.
-
-    Matches exact `curves.step` values; a missing horizon raises
-    `ValueError` so the report fails loudly instead of silently
-    interpolating. None entries become NaN so matplotlib can render the
-    gap.
-    """
+    """Pluck the HORIZON_ANCHORS values out of a per-bin curve (exact match; None -> NaN)."""
     if metric is _HorizonMetric.POSITION_MSE:
         step = list(bin_report.rollout.curves.step)
         median = list(bin_report.rollout.curves.position_mse.median)
@@ -1013,11 +938,7 @@ def _value_at_horizon(
     *,
     label: str,
 ) -> float:
-    """Return the curve value at the exact `horizon` step, or raise.
-
-    Caller passes `label` so the error message names the offending
-    report/bin/metric instead of pointing at this internal helper.
-    """
+    """Return the curve value at the exact `horizon` step, or raise (named via `label`)."""
     try:
         idx = curves_step.index(horizon)
     except ValueError as exc:

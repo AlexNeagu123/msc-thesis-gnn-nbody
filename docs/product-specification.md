@@ -165,6 +165,32 @@ runs/reports/official_1k/
 
 The main number shown in plots is **position MSE**, because it maps directly to visible trajectory error. State and velocity MSE are still saved in `metrics.json` and the CSV files for deeper analysis.
 
+## Generalization (zero-shot N-body)
+
+The trained 3-body checkpoints are run unchanged on 2-, 4-, and 5-body test sets to check whether each model transfers off-distribution. The networks are N-agnostic and the normalisation is stored in the checkpoint, so this needs no retraining or renormalisation.
+
+Generate one uniform test set per body count:
+
+```bash
+uv run python -m data.generate_eval_set --n-particles 4 --n-trajectories 200
+```
+
+It writes `data/output/generalization_<N>body.h5`. These sets are uniform, not stratified: the distance bins are calibrated to 3 bodies and do not carry over to other N.
+
+Evaluate the existing checkpoints and the baseline on each set with the same `evaluation.evaluate` and `evaluation.evaluate_baseline` commands, pointing `--test-path` at `generalization_<N>body.h5`. Then build a per-N report:
+
+```bash
+uv run python -m evaluation.report_generalization \
+  --egnn runs/egnn/<run_id>/eval_gen_4body/metrics.json \
+  --hgnn runs/hgnn/<run_id>/eval_gen_4body/metrics.json \
+  --baseline runs/baselines/constant_velocity/eval_gen_4body/metrics.json \
+  --output runs/reports/generalization_4body \
+  --label "N=4" \
+  --no-egnn
+```
+
+The report mirrors the main comparison without the distance groups: the same rollout-MSE and energy-drift figures plus a per-model summary CSV. `--no-egnn` drops EGNN from the figures while keeping it in the CSV.
+
 ## Chunked Forecasting
 
 Chunked forecasting asks a practical question: if the model is periodically corrected with true observations, how large can the prediction window be?

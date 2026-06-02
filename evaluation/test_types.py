@@ -1,8 +1,4 @@
-"""Round-trip tests for evaluation/_types.py.
-
-Uses hand-written fixture dicts (not smoke-run outputs) to keep tests fast
-and decoupled from the model code.
-"""
+"""Round-trip tests for evaluation/_types.py."""
 
 from evaluation._types import (
     EncounterBinDefinition,
@@ -333,7 +329,7 @@ _EXPECTED_LEARNED_H_COLUMNS = (
 
 
 def test_summary_row_egnn_column_order_pinned() -> None:
-    """EGNN CSV header order is pinned: static + per-step + final + per-threshold."""
+    """EGNN CSV header order is pinned: static, per-step, final, and per-threshold."""
     report = EvaluationReport.from_dict(_egnn_report_dict())
     cols = tuple(SummaryRow.from_report(report).to_csv_row().keys())
 
@@ -388,10 +384,7 @@ def test_summary_row_hgnn_appends_learned_h_columns() -> None:
 def _bin_block_fixture() -> dict:
     """Hand-written encounter_bins block reusing EGNN-shape sub-dicts.
 
-    Three bins, with the last one using the +inf top-of-range so the
-    sentinel encoding is exercised. Each per-bin block reuses the global
-    single_step / rollout / energy sub-dicts wholesale; this tests the
-    schema, not the per-bin numerics (those come in Block 2).
+    The last bin uses the +inf top-of-range so the sentinel encoding is exercised.
     """
     base = _egnn_report_dict()
     return {
@@ -492,13 +485,7 @@ def test_encounter_bin_definition_finite_hi_passes_through() -> None:
 
 
 def test_encounter_bin_definition_negative_inf_not_aliased_to_sentinel() -> None:
-    """hi=-inf must not encode as the "inf" sentinel.
-
-    The "inf" sentinel is reserved for the top-of-range +inf only. Negative
-    infinity is invalid for a bin's upper bound, but the schema layer should
-    not silently relabel it as positive: it passes the raw float through and
-    lets the JSON write step (allow_nan=False) reject it.
-    """
+    """hi=-inf must not encode as the "inf" sentinel; the raw float passes through."""
     definition = EncounterBinDefinition(id=0, name="bad", lo=0.0, hi=float("-inf"))
     encoded = definition.to_dict()
 

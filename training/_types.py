@@ -33,12 +33,8 @@ class DataConfig:
 class TrainingParams:
     """Core training hyperparameters.
 
-    Two run shapes are supported:
-        - Single horizon: `epochs` and `multi_step_horizon` define one
-          training stage of the given length.
-        - Curriculum: `curriculum_horizons` and `curriculum_epochs` define a
-          sequence of stages that share the same model, optimizer, and
-          scheduler; `epochs` and `multi_step_horizon` are ignored.
+    Single-horizon mode uses `epochs` and `multi_step_horizon`; curriculum mode uses
+    `curriculum_horizons` and `curriculum_epochs` (which then take precedence).
     """
 
     batch_size: int
@@ -190,10 +186,8 @@ class TrainConfig:
 class Checkpoint:
     """State saved to disk at each epoch.
 
-    `val_loss` always carries the one-step validation MSE so downstream
-    consumers (evaluation reports) can rely on it. `selected_metric` and
-    `selected_score` describe which metric drove `is_best` for this run;
-    `rollout_score` records the scalar rollout score when computed.
+    `val_loss` is always the one-step validation MSE; `selected_metric`/`selected_score`
+    record which metric drove `is_best`.
     """
 
     epoch: int
@@ -224,16 +218,9 @@ class TrainResult:
 
 @dataclass(frozen=True)
 class EpochRunSummary:
-    """Result returned by Trainer._run_epoch for one train or val epoch.
-
-    `loss` is the mean per-batch loss across the epoch, excluding any
-    batches that were skipped because their loss or gradient norm was
-    non-finite. Skipped batches do not contribute to the running mean.
+    """One train or val epoch summary; `loss` is the mean over non-skipped batches.
 
     Gradient diagnostics are populated only for training epochs.
-    Validation epochs leave them at None. When every training batch in an
-    epoch is skipped, `loss` is NaN and the three grad fields stay None
-    while `skipped_batches` records the count.
     """
 
     loss: float
@@ -263,16 +250,8 @@ class RolloutScore:
 class BucketRolloutScore:
     """Bucket-aware rollout score for checkpoint selection on stratified val.
 
-    `macro` is the unweighted arithmetic mean of the per-bin scalar scores
-    over non-empty bins; weighting is intentionally not used so common
-    encounter regimes cannot hide failures in close-encounter bins. Empty
-    bins are skipped from `per_bin` (and thus from the macro) so the
-    evaluator stays robust on small or unbalanced val sets.
-
-    `bin_order` carries the canonical bin order from the val file's
-    `encounter_bins`; consumers (CSV writers, plotting) iterate this to
-    keep per-bin columns in a stable order even though `per_bin` is
-    keyed by name.
+    `macro` is the unweighted mean of per-bin scores over non-empty bins, so common
+    regimes cannot mask close-encounter failures. `bin_order` fixes per-bin column order.
     """
 
     macro: float
@@ -282,22 +261,10 @@ class BucketRolloutScore:
 
 @dataclass
 class EpochMetrics:
-    """One row of the training metrics CSV.
+    """One row of the training metrics CSV; None fields render as empty strings.
 
-    Rollout diagnostics are populated only when the trainer computes a
-    rollout score for the epoch. Gradient diagnostics are populated only
-    for training epochs that took at least one optimizer step; an epoch
-    where every batch was skipped leaves the three grad-norm fields blank
-    while still recording the skip count. Empty strings render in the CSV
-    when None.
-
-    In bucket-aware mode, `rollout_score` carries the macro score and
-    `bucket_per_bin` carries per-bin RolloutScore objects keyed by bin
-    name; the per-bin diagnostics render in dynamic CSV columns whose
-    names are appended to the header at logging-init time. The single-
-    curve diagnostic columns (dominance_horizon, fraction_beating_baseline,
-    final_ratio) stay blank in bucket mode because they have no obvious
-    aggregate definition across bins.
+    In bucket mode `rollout_score` is the macro score and `bucket_per_bin` feeds the
+    dynamic per-bin columns, while the single-curve diagnostic columns stay blank.
     """
 
     epoch: int
@@ -316,14 +283,7 @@ class EpochMetrics:
 
     @classmethod
     def csv_header(cls, bin_names: tuple[str, ...] = ()) -> str:
-        """Return the CSV header line (no trailing newline).
-
-        When `bin_names` is non-empty, four per-bin columns are appended
-        per bin in the given order: rollout_score_<name>,
-        dominance_horizon_<name>, fraction_beating_baseline_<name>,
-        final_ratio_<name>. The default empty tuple preserves the
-        existing single-curve header byte-identically.
-        """
+        """CSV header line; each bin in `bin_names` appends four per-bin columns."""
         base = (
             "epoch,train_loss,val_loss,lr,"
             "rollout_score,dominance_horizon,fraction_beating_baseline,final_ratio,"
@@ -339,12 +299,7 @@ class EpochMetrics:
         return f"{base},{bucket_cols}"
 
     def to_csv_row(self, bin_names: tuple[str, ...] = ()) -> str:
-        """Return one CSV row matching csv_header column order.
-
-        Per-bin columns appear in the order given by `bin_names`; bins
-        absent from `bucket_per_bin` (e.g. empty bins skipped by the
-        macro) render as four blank columns.
-        """
+        """One CSV row matching csv_header order; bins absent from per_bin render blank."""
         rs = "" if self.rollout_score is None else f"{self.rollout_score:.6f}"
         dh = "" if self.dominance_horizon is None else str(self.dominance_horizon)
         fb = (

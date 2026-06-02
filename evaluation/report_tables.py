@@ -1,18 +1,7 @@
 """CSV tables and markdown skeleton for the comparison report.
 
-Pure functions over typed `EvaluationReport` objects. No matplotlib, no
-model loading, no rollout computation. All inputs come from already-loaded
-metrics.json files; outputs are deterministic files under the report's
-`tables/` directory or the report root (for `report.md`).
-
-The public surface centres on three reports: EGNN, HGNN, and the
-constant-velocity baseline. Baseline-normalised rollout scores remain in
-the trainer's metric stack but are intentionally absent from the report
-artifacts produced here.
-
-References:
-    - Source schema: evaluation/_types.py (EvaluationReport)
-    - Orchestrator:  evaluation/report.py (Reporter.run)
+Pure functions over the three loaded EvaluationReports (EGNN, HGNN, baseline); outputs
+land under the report's tables/ directory and report.md at the root.
 """
 
 import csv
@@ -45,13 +34,7 @@ _CHUNKED_MODEL_LABELS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class ChunkedReportSection:
-    """Pre-loaded data passed to `write_report_markdown` when chunked/ exists.
-
-    Built by `evaluation.report.Reporter` after detecting the chunked
-    sub-directory. Carries the path prefix to use in markdown links plus
-    the typed endpoint rows so the section can render the usable-K table
-    without re-parsing the CSV inside the writer.
-    """
+    """Pre-loaded chunked-section data (link prefix and endpoint rows) for write_report_markdown."""
 
     rel_dir: str
     endpoint_rows: list[ChunkedEndpointsRow]
@@ -104,12 +87,7 @@ def write_per_bin_summary_csv(
     baseline: EvaluationReport,
     path: Path,
 ) -> None:
-    """Write one row per encounter bin summarising all three reports side-by-side.
-
-    Bin order follows `egnn.encounter_bins.bins` (the canonical schedule
-    written by the evaluator). The caller is expected to have validated
-    that EGNN, HGNN, and the baseline share this layout.
-    """
+    """Write one row per encounter bin summarising all three reports, in EGNN bin order."""
     bins = _require_bins(egnn)
     hgnn_bins = _require_bins(hgnn)
     baseline_bins = _require_bins(baseline)
@@ -134,11 +112,9 @@ def write_key_timestep_summary_csv(
     baseline: EvaluationReport,
     path: Path,
 ) -> None:
-    """Write one row per (bin, anchor step) with position and state MSE summaries for all three models.
+    """Write one row per (bin, anchor step) with position/state MSE for all three models.
 
-    The step universe is the intersection of `rollout.steps` keys at the
-    top level across all three reports; in practice all come from the same
-    evaluator codepath, but the intersection guards against schema drift.
+    Steps are the intersection of the three reports' rollout.steps keys.
     """
     egnn_bins = _require_bins(egnn)
     hgnn_bins = _require_bins(hgnn)
@@ -165,12 +141,7 @@ def write_report_markdown(
     tables: Iterable[str],
     chunked: ChunkedReportSection | None = None,
 ) -> None:
-    """Render `output_dir/report.md` from the three reports plus artifact pointers.
-
-    `figures` and `tables` are relative basenames; the markdown prefixes
-    the appropriate sub-directory. The markdown index lists a single flat
-    figures section for the public presentation plots.
-    """
+    """Render output_dir/report.md from the three reports; figures/tables are basenames."""
     egnn_bins = _require_bins(egnn)
     hgnn_bins = _require_bins(hgnn)
     baseline_bins = _require_bins(baseline)
@@ -227,23 +198,23 @@ def write_report_markdown(
             ],
         ),
         "",
-        "## Encounter Bin Layout",
+        "## Distance Cluster Layout",
         "",
         _markdown_table(
-            ["Bin", "lo", "hi", "Count"],
+            ["Cluster", "lo", "hi", "Count"],
             [
                 [b.name, _fmt_float(b.lo), _fmt_inf(b.hi), _str(egnn_bins.by_name[b.name].count)]
                 for b in egnn_bins.bins
             ],
         ),
         "",
-        "## Headline: Per-bin Physical Metrics",
+        "## Headline: Metrics by Distance Cluster",
         "",
-        "Final-step median position MSE and final relative energy drift, per encounter bin. Lower is better for both; raw physical units, no normalisation. Position MSE is the audience-facing forecast quality metric (state and velocity MSE remain available in metrics.json and the technical CSVs). See the rollout position MSE and energy drift figures for the full time dynamics.",
+        "Final-step median position MSE and final relative energy drift, grouped by closest-approach distance. Lower is better for both; raw physical units, no normalisation. Position MSE is the audience-facing forecast quality metric (state and velocity MSE remain available in metrics.json and the technical CSVs). See the rollout position MSE and energy drift figures for the full time dynamics.",
         "",
         _markdown_table(
             [
-                "Bin",
+                "Cluster",
                 "n",
                 "EGNN final position MSE",
                 "HGNN final position MSE",
@@ -283,14 +254,7 @@ def write_report_markdown(
 
 
 def _chunked_section_lines(section: ChunkedReportSection) -> list[str]:
-    """Render the optional chunked-forecasting section that lives between Headline and Artifacts.
-
-    Periodic correction, not autonomous simulation: this is restated as a
-    bold blockquote so a reader skimming the report cannot miss it. The
-    figure embed and the artifact links use `section.rel_dir` as the
-    in-markdown prefix so the same renderer works whether the chunked
-    directory sits at `chunked/` or somewhere else under the report root.
-    """
+    """Render the optional chunked-forecasting section; links are prefixed by section.rel_dir."""
     rmse_threshold = USABLE_K_POSITION_MSE_THRESHOLD**0.5
     rel = section.rel_dir.rstrip("/")
     return [
@@ -300,7 +264,7 @@ def _chunked_section_lines(section: ChunkedReportSection) -> list[str]:
             "> **This is not autonomous simulation.** "
             "EGNN and HGNN are re-anchored to the ground truth every K rollout steps; "
             "the metric below is the median endpoint position MSE across trajectories "
-            "in each encounter bin."
+            "in each distance cluster."
         ),
         "",
         (
@@ -309,7 +273,7 @@ def _chunked_section_lines(section: ChunkedReportSection) -> list[str]:
             f"(equivalently, median endpoint position MSE <= {USABLE_K_POSITION_MSE_THRESHOLD})."
         ),
         "",
-        "### Largest usable K per bin and model",
+        "### Largest usable K per distance cluster and model",
         "",
         _chunked_usable_k_table(section),
         "",
@@ -475,13 +439,7 @@ def _safe_position_p95(step: RolloutStepMetrics | None) -> float | None:
 
 
 def _safe_finite_fraction(step: RolloutStepMetrics | None) -> float | None:
-    """Return finite-fraction for an anchor step, or None when the step is absent.
-
-    Reads from `position_mse` because the table now leads with position MSE
-    columns; `finite_fraction` is identical across the metric subfields by
-    construction (same trajectories drive all three), so the choice of source
-    does not change the value.
-    """
+    """Return finite-fraction for an anchor step, or None when absent (same across metrics)."""
     return step.position_mse.finite_fraction if step is not None else None
 
 

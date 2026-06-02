@@ -87,6 +87,7 @@ runs/reports/<name>/
 | `data/_io.py` | YAML loading and HDF5 read/write |
 | `data/encounters.py` | encounter-distance bins and pure binning helpers |
 | `data/generate.py` | REBOUND trajectory generation and stratified acceptance loop |
+| `data/generate_eval_set.py` | one uniform test set per body count for generalization |
 | `data/dataset.py` | transition dataset used by training |
 
 HDF5 read/write details stay in `data/_io.py`. Training and evaluation use typed loaders instead of raw HDF5 keys.
@@ -124,9 +125,11 @@ Training selects checkpoints. Test-set results are produced later by evaluation.
 | `evaluation/metrics.py` | single-step, rollout, divergence, and energy metrics |
 | `evaluation/evaluate.py` | trained-checkpoint evaluation |
 | `evaluation/evaluate_baseline.py` | baseline evaluation |
+| `evaluation/rollout_score.py` | per-bin baseline envelope used by evaluation |
 | `evaluation/report.py` | comparison-report driver |
 | `evaluation/report_tables.py` | report CSV and markdown tables |
 | `evaluation/report_figures.py` | presentation-grade report figures |
+| `evaluation/report_generalization.py` | per-N generalization report, no distance groups |
 | `evaluation/evaluate_chunked.py` | periodically corrected short-horizon forecasting |
 | `evaluation/animate_best.py` | representative trajectory animations |
 | `evaluation/plots.py` | notebook-facing plotting utilities |

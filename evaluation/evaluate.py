@@ -10,9 +10,9 @@ from torch import nn
 
 from data._io import read_trajectories
 from data._types import Trajectories
-from data.dataset import NBodyDataset
 from evaluation._binning import expand_trajectory_mask_to_transitions, trajectory_masks
 from evaluation._io import write_evaluation_report, write_summary_csv
+from evaluation._loader import load_trained_model
 from evaluation._types import (
     DistanceSummary,
     DivergenceMetrics,
@@ -47,10 +47,9 @@ from evaluation.metrics import (
 )
 from evaluation.rollout_score import BaselineEnvelopeComputer
 from models.hgnn import HGNN
-from training._io import load_checkpoint, load_config
-from training._types import Checkpoint, TrainConfig
+from training._io import load_config
+from training._types import TrainConfig
 from training.rollout_score import DEFAULT_ANCHOR_STEPS, compute_rollout_score
-from training.train import build_model
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -74,9 +73,9 @@ def evaluate_checkpoint(
     test_path = Path(test_path)
 
     torch_device = _resolve_device(device)
-    checkpoint = load_checkpoint(checkpoint_path, torch_device)
-    pos_std, vel_std = _normalization_stats(cfg, checkpoint)
-    model = _load_model(cfg, checkpoint, pos_std, vel_std, torch_device)
+    loaded = load_trained_model(config_path, checkpoint_path, torch_device)
+    checkpoint, model = loaded.checkpoint, loaded.model
+    pos_std, vel_std = loaded.pos_std, loaded.vel_std
 
     test_bundle = read_trajectories(test_path)
     test_traj = test_bundle.states
@@ -146,14 +145,10 @@ def build_evaluation_report(
     envelope_computer: BaselineEnvelopeComputer | None = None,
     steps: list[int] | None = None,
 ) -> EvaluationReport:
-    """Build the typed evaluation report from precomputed metrics and caller metadata.
+    """Assemble the typed report from precomputed metrics and metadata.
 
-    When `test_bundle` carries stratification fields, the report also gets
-    a populated `encounter_bins` block built from per-bin slices of the
-    same metric arrays. When `envelope_computer` is provided (already
-    fit on the test trajectories), each non-empty per-bin block also
-    receives baseline-normalized rollout-score diagnostics. Otherwise
-    those fields stay None.
+    A stratified `test_bundle` adds the per-bin `encounter_bins` block; an
+    `envelope_computer` adds baseline-normalized rollout scores there.
     """
     if steps is None:
         steps = _summary_steps(test_traj.shape[1] - 1)
@@ -353,40 +348,6 @@ def _build_baseline_ratios(
         fraction_beating_baseline=_float(score.fraction_beating_baseline),
         final_ratio=_float(score.final_ratio),
     )
-
-
-def _load_model(
-    cfg: TrainConfig,
-    checkpoint: Checkpoint,
-    pos_std: float,
-    vel_std: float,
-    device: torch.device,
-) -> nn.Module:
-    """Build the configured model and load checkpoint weights."""
-    model = build_model(cfg, pos_std=pos_std, vel_std=vel_std).to(device)
-    model.load_state_dict(checkpoint.model)
-    model.eval()
-    return model
-
-
-def _normalization_stats(
-    cfg: TrainConfig,
-    checkpoint: Checkpoint,
-) -> tuple[float, float]:
-    """Load checkpoint normalization stats, falling back to train data."""
-    if checkpoint.pos_std is not None and checkpoint.vel_std is not None:
-        return checkpoint.pos_std, checkpoint.vel_std
-
-    train_path = Path(cfg.data.train_path)
-    if train_path.exists():
-        train_set = NBodyDataset(str(train_path))
-        return (
-            float(train_set.inputs[..., :2].std()),
-            float(train_set.inputs[..., 2:4].std()),
-        )
-
-    msg = f"Missing checkpoint normalization stats and train data: {train_path}"
-    raise FileNotFoundError(msg)
 
 
 def _summary_steps(n_steps: int) -> list[int]:
@@ -610,7 +571,7 @@ def _relative_drift(values: np.ndarray) -> np.ndarray:
 
 
 def _summarize_mse(values: np.ndarray) -> MseSummary:
-    """Summarize single-step MSE values (mean/median/max + p95, p99)."""
+    """Summarize single-step MSE values (mean, median, max, p95, p99)."""
     finite = values[np.isfinite(values)]
     if len(finite) == 0:
         return MseSummary(mean=None, median=None, max=None, p95=None, p99=None)
@@ -624,7 +585,7 @@ def _summarize_mse(values: np.ndarray) -> MseSummary:
 
 
 def _summarize_distance(values: np.ndarray) -> DistanceSummary:
-    """Summarize minimum pairwise distance values (mean/median/max + p5, p50)."""
+    """Summarize minimum pairwise distance values (mean, median, max, p5, p50)."""
     finite = values[np.isfinite(values)]
     if len(finite) == 0:
         return DistanceSummary(mean=None, median=None, max=None, p5=None, p50=None)
@@ -638,7 +599,7 @@ def _summarize_distance(values: np.ndarray) -> DistanceSummary:
 
 
 def _summarize_drift(values: np.ndarray) -> DriftSummary:
-    """Summarize energy drift values (mean/median/max + p95)."""
+    """Summarize energy drift values (mean, median, max, p95)."""
     finite = values[np.isfinite(values)]
     if len(finite) == 0:
         return DriftSummary(mean=None, median=None, max=None, p95=None)

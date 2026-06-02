@@ -1,37 +1,13 @@
 """Chunked forecast evaluation: short-horizon prediction under periodic truth resets.
 
-The model is asked to predict the next `chunk_size` frames starting from a
-true observation, then the next chunk begins again from the next true
-observation, and so on. The metric is forecast accuracy *between*
-observations, not the autonomous-simulation drift that the main rollout
-evaluation tracks.
+The model predicts the next `chunk_size` frames from a true observation, then re-anchors
+to the next one, measuring forecast accuracy between observations rather than the
+autonomous drift the main rollout tracks. EGNN, HGNN, and constant-velocity are compared
+on the stratified test set.
 
-Three predictors are compared on the official stratified test set:
-    - EGNN checkpoint
-    - HGNN checkpoint
-    - constant-velocity baseline
-
-The module emits two CSVs, one markdown, and one figure pair:
-    - chunked_summary.csv               (median over all predicted frames except 0)
-    - chunked_endpoints.csv             (state + position + velocity MSE over chunk-endpoint frames)
-    - chunked_report.md
-    - chunked_endpoint_position_mse_by_bin.{png,pdf}
-
-Endpoint position MSE is the audience-facing metric: a K is called "usable"
-when its median endpoint position MSE stays at most `USABLE_K_POSITION_MSE_THRESHOLD`
-(corresponding to a 0.5 coordinate-unit RMSE). State and velocity MSE remain in
-the CSV as technical backup.
-
-This is intentionally separate from `evaluation/evaluate.py`: the standard
-evaluator runs one model end-to-end against a stratified test set; this
-runner runs three models against the same dataset under a different
-predictor contract and writes a self-contained artifact triple.
-
-References:
-    - evaluation/_loader.py    : load_trained_model
-    - evaluation/metrics.py    : rollout (single-trajectory autoregressive helper)
-    - evaluation/_binning.py   : trajectory_masks
-    - models/baselines.py      : ConstantVelocityBaseline
+Emits chunked_summary.csv, chunked_endpoints.csv, chunked_report.md, and
+chunked_endpoint_position_mse_by_bin.{png,pdf}. A chunk size K is "usable" when its median
+endpoint position MSE stays at most USABLE_K_POSITION_MSE_THRESHOLD (a 0.5-unit RMSE).
 """
 
 import argparse
@@ -107,11 +83,7 @@ class ChunkedSummaryRow:
 
 @dataclass(frozen=True)
 class ChunkedEndpointsRow:
-    """One row of chunked_endpoints.csv: chunk-endpoint frame metrics per cell.
-
-    Position MSE is the audience-facing metric for the headline figure and the
-    usable-K rule; state and velocity MSE are kept as technical backup.
-    """
+    """One row of chunked_endpoints.csv: chunk-endpoint frame metrics per cell."""
 
     chunk_size: int
     bin: str
@@ -145,19 +117,8 @@ def run_chunked_rollout(
 ) -> npt.NDArray[np.floating]:
     """Predict each trajectory in chunks of `chunk_size`, resetting to truth between chunks.
 
-    For each trajectory the algorithm is:
-        - initialise predicted[0] = truth[0]
-        - for each start in 0, K, 2K, ...:
-            steps = min(K, n_frames - 1 - start)
-            run an autoregressive rollout of `steps` steps from truth[start]
-            write the resulting predictions into predicted[start+1 : start+1+steps]
-
-    The final chunk is allowed to be partial (i.e. shorter than `chunk_size`)
-    when `n_frames - 1` is not divisible by `chunk_size`. Output shape matches
-    `test_traj`: `(n_traj, n_frames, n_particles, state_dim)`.
-
-    `chunk_size` must be at least 1. The model is invoked with `torch.no_grad`
-    inside `rollout`, so callers do not need to set inference mode.
+    Each chunk runs an autoregressive rollout from the chunk's true start frame; the final
+    chunk may be partial. Output shape matches `test_traj`.
     """
     if chunk_size < 1:
         msg = f"chunk_size must be >= 1; got {chunk_size}"
@@ -176,17 +137,9 @@ def run_chunked_rollout(
 
 
 def chunk_endpoint_frames(n_frames: int, chunk_size: int) -> list[int]:
-    """Return the trailing-frame index of every chunk over a horizon of `n_frames`.
+    """Trailing-frame index of every chunk over `n_frames` (e.g. K=10 -> [10, 20, ..., 199]).
 
-    With `n_frames = 200` and `chunk_size = 10` this yields `[10, 20, ..., 199]`;
-    the last entry is the partial-chunk tail when `n_frames - 1` is not a
-    multiple of `chunk_size`. Indices are 1-based against the predicted array
-    (frame 0 is truth and never an endpoint).
-
-    `chunk_size` must be at least 1. Without this guard a non-positive value
-    would never advance the loop and the function would hang; the orchestrator
-    rejects bad chunk sizes upstream, but this helper is part of the public
-    surface so external callers need their own catch.
+    The last entry may be a partial-chunk tail; indices are 1-based (frame 0 is truth).
     """
     if chunk_size < 1:
         msg = f"chunk_size must be >= 1; got {chunk_size}"
@@ -205,13 +158,7 @@ def aggregate_summary(
     predicted: npt.NDArray[np.floating],
     mask: npt.NDArray[np.bool_],
 ) -> dict[str, float | None]:
-    """Aggregate per-frame MSE across (trajectories-in-bin, frames > 0).
-
-    Returns None for every field when the bin is empty (mask all False).
-    Median / p95 are computed over the finite entries only; the
-    `finite_fraction` field reports the share of (traj, frame) pairs that
-    produced a finite MSE.
-    """
+    """Aggregate per-frame MSE over (in-bin trajectories, frames > 0); None for an empty bin."""
     if not mask.any():
         return _empty_summary()
 
@@ -237,11 +184,7 @@ def aggregate_endpoints(
     mask: npt.NDArray[np.bool_],
     chunk_size: int,
 ) -> dict[str, float | None]:
-    """Aggregate state, position, and velocity MSE across (trajectories-in-bin, chunk-endpoint frames).
-
-    Position MSE drives the headline figure and the usable-K rule. State and
-    velocity MSE accompany it in the CSV for technical reference.
-    """
+    """Aggregate state/position/velocity MSE over (in-bin trajectories, chunk-endpoint frames)."""
     if not mask.any():
         return _empty_endpoints()
 
@@ -281,12 +224,7 @@ def largest_usable_k(
     *,
     threshold: float = USABLE_K_POSITION_MSE_THRESHOLD,
 ) -> dict[tuple[str, str], int | None]:
-    """For each (bin, model), return the largest K with median endpoint position MSE <= threshold.
-
-    `None` means no evaluated K met the threshold for that cell. Cells that
-    produced no finite estimate (empty bin, all non-finite predictions) are
-    treated the same way as cells that failed the threshold.
-    """
+    """Largest K per (bin, model) with median endpoint position MSE <= threshold, else None."""
     by_cell: dict[tuple[str, str], int | None] = {}
     for row in endpoint_rows:
         key = (row.bin, row.model)
@@ -487,12 +425,7 @@ def _percentile(values: npt.NDArray[np.floating], q: float) -> float | None:
 
 
 def _clear_chunked_figure_artifacts(output_dir: Path) -> None:
-    """Drop stale chunked PNG/PDF figures so a re-run mirrors the current manifest.
-
-    Mirrors `evaluation.report.Reporter._clear_figure_artifacts` so renaming
-    the headline figure (state -> position MSE) does not leave the previous
-    `chunked_state_mse_by_bin.{png,pdf}` next to the new files.
-    """
+    """Drop stale chunked PNG/PDF figures so a re-run mirrors the current manifest."""
     for path in output_dir.glob("chunked_*.png"):
         path.unlink()
     for path in output_dir.glob("chunked_*.pdf"):
@@ -500,18 +433,9 @@ def _clear_chunked_figure_artifacts(output_dir: Path) -> None:
 
 
 def read_endpoint_rows(path: Path) -> list[ChunkedEndpointsRow]:
-    """Load `chunked_endpoints.csv` back into typed rows for cross-report consumers.
+    """Load chunked_endpoints.csv into typed rows; header must match ENDPOINTS_COLUMNS exactly.
 
-    The header must match `ENDPOINTS_COLUMNS` exactly. A legacy six-column
-    CSV (state MSE only, no position / velocity columns) is rejected up
-    front because silently filling the missing fields with `None` would
-    make `largest_usable_k` render every cell as "none" instead of
-    surfacing the schema drift.
-
-    The main report's chunked section reuses these rows to render the
-    usable-K summary; doing the parse here keeps the schema knowledge in
-    one module. Empty CSV cells round-trip to `None`, matching how
-    `_write_csv` emits them.
+    A legacy six-column CSV is rejected rather than silently filled with None.
     """
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
@@ -679,11 +603,7 @@ def _usable_k_table(
     usable: dict[tuple[str, str], int | None],
     endpoint_rows: list[ChunkedEndpointsRow],
 ) -> str:
-    """Render the largest usable K per (bin, model) as a markdown table.
-
-    Bin order follows first occurrence in `endpoint_rows` (which the orchestrator
-    emits in canonical encounter-bin order). Model order follows `MODEL_NAMES`.
-    """
+    """Render the largest usable K per (bin, model) as a markdown table."""
     bins = list(dict.fromkeys(r.bin for r in endpoint_rows))
     headers = ["bin", *[_legend_label(name) for name in MODEL_NAMES]]
     body = [
@@ -726,12 +646,7 @@ def _plot_endpoint_position_mse_grouped(
     endpoint_rows: list[ChunkedEndpointsRow],
     chunks: list[int],
 ) -> list[Path]:
-    """Render the headline chunked figure: median endpoint position MSE per bin.
-
-    One panel per encounter bin, three grouped bars per chunk size (EGNN, HGNN,
-    constant-velocity baseline). Position MSE is the audience-facing metric so
-    audience-side comparisons match the threshold used by the usable-K table.
-    """
+    """Headline chunked figure: median endpoint position MSE per bin, grouped bars per chunk size."""
     bins = list(dict.fromkeys(r.bin for r in endpoint_rows))
     n_bins = len(bins)
     if n_bins == 0:
@@ -798,7 +713,7 @@ def _plot_endpoint_position_mse_grouped(
     for ax in flat_axes[n_bins + 1 :]:
         ax.axis("off")
 
-    fig.suptitle("Chunked forecast: median endpoint position MSE by encounter bin", y=0.99)
+    fig.suptitle("Chunked forecast: median endpoint position MSE by distance cluster", y=0.99)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
     png_path = output_stem.with_suffix(".png")
     pdf_path = output_stem.with_suffix(".pdf")

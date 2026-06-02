@@ -132,11 +132,7 @@ def test_init_metrics_csv_writes_header(tmp_path: Path) -> None:
 
 
 def test_append_metrics_writes_row(tmp_path: Path) -> None:
-    """append_metrics adds one row in the EpochMetrics format.
-
-    Rollout and gradient columns are blank when nothing is supplied
-    (e.g. constructing EpochMetrics outside the training loop).
-    """
+    """append_metrics adds one row; rollout and gradient columns are blank when unsupplied."""
     path = tmp_path / "metrics.csv"
     init_metrics_csv(path)
     append_metrics(path, EpochMetrics(epoch=1, train_loss=0.5, val_loss=0.6, lr=1e-3))
@@ -288,11 +284,7 @@ def test_csv_header_and_row_have_matching_column_counts() -> None:
 
 
 def test_bucket_rollout_score_macro_equals_arithmetic_mean() -> None:
-    """BucketRolloutScore.macro must be the arithmetic mean of populated per-bin scores.
-
-    Pinned explicitly so a future "improvement" to weighted averaging
-    would have to deliberately change this assertion.
-    """
+    """BucketRolloutScore.macro is the arithmetic mean of populated per-bin scores."""
     per_bin = {
         "extreme": _rollout_score_fixture(0.10, 5, 0.20, 1.5),
         "close": _rollout_score_fixture(-0.30, 25, 0.60, 0.8),

@@ -1,10 +1,4 @@
-"""Tests for the comparison report orchestrator (`evaluation/report.py`).
-
-The orchestrator now consumes three reports (EGNN, HGNN, constant-velocity
-baseline) and validates that all three share the same bin layout and
-rollout horizon. These tests exercise loading, validation, and the CLI
-entrypoint.
-"""
+"""Tests for the comparison report orchestrator (evaluation/report.py)."""
 
 import copy
 import json
@@ -226,11 +220,7 @@ def test_run_rejects_mismatched_rollout_step_lengths(tmp_path: Path) -> None:
 
 
 def test_run_rejects_mismatched_rollout_step_values(tmp_path: Path) -> None:
-    """Same-length step arrays with different values must still fail fast.
-
-    Without exact comparison the figures would index EGNN's step array
-    against HGNN/baseline curve data, silently misplotting.
-    """
+    """Same-length step arrays with different values must still fail fast."""
     egnn_dict = _stratified_report_dict()
     hgnn_dict = _hgnn_stratified_report_dict()
     baseline_dict = _baseline_stratified_report_dict()
@@ -255,7 +245,6 @@ def test_run_rejects_per_bin_rollout_step_mismatch(tmp_path: Path) -> None:
     egnn_dict = _stratified_report_dict()
     hgnn_dict = _hgnn_stratified_report_dict()
     baseline_dict = _baseline_stratified_report_dict()
-    # Per-bin curves are deep-copies of the top-level ones; mutate just one bin's array.
     bin_block = baseline_dict["encounter_bins"]["by_name"]["close"]
     bin_block["rollout"] = copy.deepcopy(bin_block["rollout"])
     bin_block["rollout"]["curves"]["step"] = [0, 1, 2, 9]
@@ -417,8 +406,7 @@ def _seed_chunked_dir(reporter: Reporter) -> Path:
     chunked_dir = reporter.output_dir / "chunked"
     chunked_dir.mkdir(parents=True, exist_ok=True)
     (chunked_dir / "chunked_endpoints.csv").write_text(_CHUNKED_ENDPOINTS_CSV_FIXTURE)
-    # only the CSV is required for the section; create empty siblings so the markdown
-    # links to existing files (a stricter check than relying on the loader alone).
+    # empty siblings so the markdown links resolve to existing files
     (chunked_dir / "chunked_summary.csv").write_text("")
     (chunked_dir / "chunked_report.md").write_text("")
     (chunked_dir / "chunked_endpoint_position_mse_by_bin.png").write_bytes(b"PNG")
@@ -439,9 +427,7 @@ def test_run_omits_chunked_section_when_chunked_dir_absent(tmp_path: Path) -> No
 def test_run_emits_chunked_section_when_chunked_dir_present(tmp_path: Path) -> None:
     """A chunked sub-directory wires the short-horizon section into report.md."""
     reporter = _build_reporter(tmp_path)
-    # Reporter._setup_output() will create output_dir; seed chunked AFTER setup so the
-    # directory exists when _load_chunked_section runs. Easiest path: ensure the parent
-    # exists, then drop chunked/ before invoking run().
+    # seed chunked/ before run() so the directory exists when _load_chunked_section runs
     reporter.output_dir.mkdir(parents=True, exist_ok=True)
     _seed_chunked_dir(reporter)
 
@@ -470,7 +456,7 @@ def test_run_chunked_section_loader_raises_on_malformed_csv(tmp_path: Path) -> N
     reporter.output_dir.mkdir(parents=True, exist_ok=True)
     chunked_dir = reporter.output_dir / "chunked"
     chunked_dir.mkdir()
-    # Stage the full manifest so the partial-manifest fallback does not kick in.
+    # stage the full manifest so the partial-manifest fallback does not kick in
     (chunked_dir / "chunked_summary.csv").write_text("")
     (chunked_dir / "chunked_report.md").write_text("")
     (chunked_dir / "chunked_endpoint_position_mse_by_bin.png").write_bytes(b"PNG")

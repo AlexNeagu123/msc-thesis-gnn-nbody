@@ -12,7 +12,6 @@ import torch
 from data._io import write_trajectories
 from data._types import EncounterBin, Trajectories
 from evaluation.evaluate import (
-    _normalization_stats,
     _output_dir,
     evaluate_checkpoint,
 )
@@ -43,12 +42,7 @@ def _write_h5(path: Path, n_traj: int = 2, n_steps: int = 4) -> None:
 
 
 def _write_stratified_h5(path: Path, n_steps: int = 4) -> Trajectories:
-    """Write a 4-trajectory stratified fixture with 2 bins, return the bundle.
-
-    Trajectories alternate bins so per-bin slicing has 2 trajectories each,
-    enough to exercise the per-bin aggregation path while keeping the
-    fixture cheap to evaluate against a tiny model.
-    """
+    """Write a 4-trajectory stratified fixture with 2 bins, return the bundle."""
     n_traj = 4
     rng = np.random.default_rng(7)
     states = rng.normal(size=(n_traj, n_steps, 3, 5)).astype(np.float32)
@@ -113,26 +107,6 @@ training:
   device: cpu
 """
     )
-
-
-def test_normalization_prefers_checkpoint_metadata(tmp_path: Path) -> None:
-    """Evaluation should use the stats saved with the trained checkpoint."""
-    train_path = tmp_path / "train.h5"
-    val_path = tmp_path / "val.h5"
-    _write_h5(train_path)
-    _write_h5(val_path)
-
-    cfg = _cfg(train_path, val_path, "egnn")
-    checkpoint = Checkpoint(
-        epoch=1,
-        model={},
-        optimizer={},
-        val_loss=0.1,
-        pos_std=12.5,
-        vel_std=3.25,
-    )
-
-    assert _normalization_stats(cfg, checkpoint) == (12.5, 3.25)
 
 
 def test_default_output_dir_for_canonical_runs_checkpoint_colocates() -> None:

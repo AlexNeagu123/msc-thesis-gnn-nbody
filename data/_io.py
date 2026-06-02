@@ -1,13 +1,4 @@
-"""I/O for the data pipeline: HDF5 trajectories and YAML data-gen configs.
-
-Owns the on-disk schema (dataset names, metadata group) so producers
-(data/generate.py) and consumers (data/dataset.py, evaluation) never
-touch raw h5py keys.
-
-References:
-    - Trajectory bundle: data/_types.py (Trajectories, TrajectoryMetadata, EncounterBin)
-    - Data-gen config:  data/_types.py (DataGenConfig)
-"""
+"""I/O for the data pipeline: owns the HDF5 schema and YAML data-gen config loading."""
 
 import json
 from dataclasses import fields
@@ -36,22 +27,15 @@ def load_data_config(path: str | Path) -> DataGenConfig:
 
 
 def read_states(path: Path) -> np.ndarray:
-    """Load only the trajectory states (hot path for dataset/evaluator).
-
-    Skips the energies and metadata datasets — use read_trajectories if you
-    need the full bundle.
-    """
+    """Load only the trajectory states; use read_trajectories for the full bundle."""
     with h5py.File(path, "r") as f:
         return f[_TRAJECTORIES_KEY][:]
 
 
 def read_trajectories(path: Path) -> Trajectories:
-    """Load trajectories, energies, and optional metadata + stratification.
+    """Load trajectories, energies, and optional metadata and stratification.
 
-    Stratification fields are atomic: a file with all four pieces produces
-    a Trajectories with all four populated; a file with none produces a
-    Trajectories with all four None (uniform / non-stratified); a partial
-    file raises ValueError listing which pieces are missing.
+    A partial stratification set on disk raises rather than silently downgrading.
     """
     with h5py.File(path, "r") as f:
         states = f[_TRAJECTORIES_KEY][:]
@@ -67,21 +51,13 @@ def read_trajectories(path: Path) -> Trajectories:
         min_pairwise_distance=strat["min_pairwise_distance"],
         encounter_bins=strat["encounter_bins"],
     )
-    # symmetric guard: corrupted or foreign files surface a clear ValueError here
-    # instead of leaking bad data into downstream consumers.
+    # symmetric guard so corrupted files fail here, not in downstream consumers
     _validate_stratification(trajectories)
     return trajectories
 
 
 def write_trajectories(path: Path, trajectories: Trajectories) -> None:
-    """Save trajectories, energies, and optional metadata to HDF5.
-
-    When stratification fields are present they are persisted as
-    (`encounter_bin_id`, `encounter_bin_name`, `min_pairwise_distance`)
-    per-trajectory datasets plus an `encounter_bins_json` attribute on
-    the file root. Stratification is atomic: either all four fields are
-    populated and survive validation, or none are written.
-    """
+    """Save trajectories, energies, and optional metadata and stratification to HDF5."""
     _validate_stratification(trajectories)
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,12 +97,7 @@ def _write_metadata(f: h5py.File, metadata: TrajectoryMetadata) -> None:
 
 
 def _validate_stratification(t: Trajectories) -> None:
-    """Enforce the all-or-none stratification contract before write.
-
-    The contract is intentionally strict: a partial set of stratification
-    fields is treated as a producer bug rather than silently downgraded
-    to non-stratified. `n_trajectories` is taken from `states.shape[0]`.
-    """
+    """Enforce the all-or-none stratification contract, with shape/dtype checks."""
     parts = {
         "encounter_bin_id": t.encounter_bin_id,
         "encounter_bin_name": t.encounter_bin_name,
@@ -181,12 +152,7 @@ def _validate_stratification(t: Trajectories) -> None:
 
 
 def _validate_stratification_consistency(t: Trajectories) -> None:
-    """Cross-check id <-> name <-> distance against the bin definitions.
-
-    Fired only after the structural checks pass, so all four arrays /
-    tuples are guaranteed populated and length-aligned. Vectorized so it
-    stays cheap for large datasets.
-    """
+    """Cross-check id <-> name <-> distance against the bin definitions."""
     bins = t.encounter_bins
     n_bins = len(bins)
     ids = t.encounter_bin_id
@@ -222,14 +188,7 @@ def _validate_stratification_consistency(t: Trajectories) -> None:
 
 
 def _encode_bins(bins: tuple[EncounterBin, ...]) -> str:
-    """Encode bins as strict JSON.
-
-    Only the top-of-range `hi == +inf` is serialised as the string
-    sentinel `"inf"`; valid configs never have non-finite `lo`, so it is
-    encoded as a plain number. `allow_nan=False` is a defensive backstop
-    that surfaces any upstream bug (NaN, -inf in lo, etc.) as a clear
-    `ValueError` from the encoder rather than letting it persist.
-    """
+    """Encode bins as strict JSON, with `hi == +inf` written as the sentinel "inf"."""
     payload = [
         {
             "name": b.name,
@@ -256,8 +215,7 @@ def _decode_bins(s: str) -> tuple[EncounterBin, ...]:
 def _write_stratification(f: h5py.File, t: Trajectories) -> None:
     """Persist the four stratification fields. Caller has validated atomicity."""
     f.create_dataset(_ENCOUNTER_BIN_ID_KEY, data=t.encounter_bin_id)
-    # h5py vlen string write needs object-dtype input; numpy unicode dtype
-    # (`<U`) is not accepted directly.
+    # h5py vlen string write needs object-dtype input, not numpy `<U`
     f.create_dataset(
         _ENCOUNTER_BIN_NAME_KEY,
         data=np.asarray(t.encounter_bin_name, dtype=object),

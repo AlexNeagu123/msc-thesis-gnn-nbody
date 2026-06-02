@@ -1,9 +1,4 @@
-"""Notebook-only plotting and animation helpers for evaluation diagnostics.
-
-Numeric metric computations live in evaluation/metrics.py. Anything that
-imports matplotlib or IPython belongs here so the official evaluator stays
-free of visualization dependencies.
-"""
+"""Notebook-only plotting and animation helpers (matplotlib/IPython kept out of metrics.py)."""
 
 import numpy as np
 import numpy.typing as npt

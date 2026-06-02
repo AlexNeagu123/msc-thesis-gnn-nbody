@@ -134,9 +134,7 @@ def test_different_seeds_produce_different_trajectories(
         assert not np.allclose(states1, states2)
 
 
-# --- stratified split generation ---
-
-
+# stratified split generation
 _STRAT_BINS: tuple[EncounterBin, ...] = (
     EncounterBin("close", 0.0, 0.05),
     EncounterBin("mid", 0.05, 0.5),
@@ -145,12 +143,7 @@ _STRAT_BINS: tuple[EncounterBin, ...] = (
 
 
 def _candidate(d_min: float, n_steps: int = 4) -> tuple[np.ndarray, np.ndarray]:
-    """Build a (states, energies) pair whose pairwise min distance equals `d_min`.
-
-    Uses three particles in a line: the (0, 1) pair sits at exactly `d_min`
-    apart, and (1, 2) is at distance 1.0; (0, 2) is therefore d_min + 1.0.
-    The minimum is `d_min`, which the generator's classifier picks up.
-    """
+    """Build a (states, energies) pair whose pairwise min distance equals `d_min`."""
     states = np.zeros((n_steps, 3, 5), dtype=np.float64)
     states[:, 0, :2] = (0.0, 0.0)
     states[:, 1, :2] = (d_min, 0.0)
@@ -197,14 +190,7 @@ def _stratified_cfg(
 
 
 class _StubGenerator(Generator):
-    """Generator subclass that returns scripted candidate trajectories.
-
-    `candidates` is an iterable of (states, energies) tuples or `None`
-    sentinels (modelling simulator rejections). Each `_simulate_trajectory`
-    call consumes one element. Callers are expected to script enough
-    candidates to satisfy the requested quotas plus any over-quota /
-    rejection events the test exercises.
-    """
+    """Generator subclass returning scripted candidates; None models a simulator rejection."""
 
     def __init__(
         self,
@@ -269,8 +255,7 @@ def test_stratified_discards_over_quota_candidates(tmp_path: Path) -> None:
         val_path=tmp_path / "v.h5",
         test_path=tmp_path / "t.h5",
     )
-    # script: close, close (over-quota), mid -> file should still hold {close: 1, mid: 1}
-    candidates = [_close(), _close(), _mid()]
+    candidates = [_close(), _close(), _mid()]  # second close is over-quota
     gen = _StubGenerator(cfg, candidates)
     gen._generate_split(cfg.splits[0])
 
@@ -301,12 +286,7 @@ def test_stratified_skips_simulator_rejections(tmp_path: Path) -> None:
 
 
 def test_stratified_output_is_shuffled(tmp_path: Path) -> None:
-    """Accepted trajectories are not stored in arrival order grouped by bin.
-
-    Feeds 3 close + 3 smooth candidates in two contiguous runs; if the
-    saved order matched arrival order the names would be `[close]*3 +
-    [smooth]*3`. The split RNG-driven shuffle should break that pattern.
-    """
+    """Accepted trajectories are shuffled, not stored grouped by arrival order."""
     cfg = _stratified_cfg(
         n_train=6,
         n_val=0,
@@ -325,11 +305,7 @@ def test_stratified_output_is_shuffled(tmp_path: Path) -> None:
 
 
 def test_stratified_raises_when_max_attempts_exhausted(tmp_path: Path) -> None:
-    """Quotas that cannot be satisfied raise a clear error rather than hang.
-
-    Uses StratifiedConfig.max_attempts to keep the cap small (50) so the
-    test does not need thousands of scripted candidates to trigger it.
-    """
+    """Quotas that cannot be satisfied raise rather than hang once max_attempts is hit."""
     cfg = _stratified_cfg(
         n_train=2,
         n_val=0,
@@ -350,7 +326,7 @@ def test_stratified_raises_when_max_attempts_exhausted(tmp_path: Path) -> None:
             max_attempts=50,
         ),
     )
-    # only 'close' candidates; the 'smooth' quota will never be filled.
+    # only 'close' candidates; the 'smooth' quota is never filled
     candidates: list[tuple[np.ndarray, np.ndarray] | None] = [_close()] * 51
     gen = _StubGenerator(cfg, candidates)
 
@@ -359,13 +335,7 @@ def test_stratified_raises_when_max_attempts_exhausted(tmp_path: Path) -> None:
 
 
 def test_stratified_max_attempts_default_is_safe_for_rare_bins(tmp_path: Path) -> None:
-    """Leaving max_attempts unset uses the bumped default formula.
-
-    The default `max(10000, n*2000)` is large enough that real generation
-    of a small split (e.g. n=2) gets at least 10000 attempts; here we
-    only assert the formula is in effect by requesting enough candidates
-    that the small-default of 1000 (the old value) would have failed.
-    """
+    """Unset max_attempts uses a default large enough to absorb many rejections."""
     cfg = _stratified_cfg(
         n_train=2,
         n_val=0,
@@ -375,8 +345,7 @@ def test_stratified_max_attempts_default_is_safe_for_rare_bins(tmp_path: Path) -
         val_path=tmp_path / "v.h5",
         test_path=tmp_path / "t.h5",
     )
-    # 1500 None rejections (above the old 1000 cap) followed by the two valid candidates;
-    # the bumped default of 10000 absorbs the rejections without hitting the cap.
+    # 1500 rejections then two valid candidates; the default cap absorbs them
     candidates: list[tuple[np.ndarray, np.ndarray] | None] = [None] * 1500 + [_close(), _mid()]
     gen = _StubGenerator(cfg, candidates)
     gen._generate_split(cfg.splits[0])
@@ -386,11 +355,7 @@ def test_stratified_max_attempts_default_is_safe_for_rare_bins(tmp_path: Path) -
 
 
 def test_stratified_zero_trajectory_split_produces_empty_arrays(tmp_path: Path) -> None:
-    """A split with n=0 writes empty per-trajectory arrays without crashing.
-
-    Real datasets occasionally configure n_val=0 or n_test=0 for smoke runs.
-    The stratified path must handle that without an np.stack-on-empty error.
-    """
+    """A split with n=0 writes empty per-trajectory arrays without crashing."""
     cfg = _stratified_cfg(
         n_train=0,
         n_val=0,
@@ -407,7 +372,7 @@ def test_stratified_zero_trajectory_split_produces_empty_arrays(tmp_path: Path) 
     assert loaded.encounter_bin_id.shape == (0,)
     assert loaded.encounter_bin_name.shape == (0,)
     assert loaded.min_pairwise_distance.shape == (0,)
-    # bin descriptors round-trip even when no trajectories were collected
+    # bin descriptors round-trip even with no trajectories
     assert loaded.encounter_bins == _STRAT_BINS
 
 
@@ -425,8 +390,7 @@ def test_stratified_round_trips_through_write_and_read(tmp_path: Path) -> None:
     candidates = [_close(), _mid(), _smooth()]
     _StubGenerator(cfg, candidates)._generate_split(cfg.splits[0])
 
-    # read_trajectories runs _validate_stratification; if any cross-field
-    # invariant were broken this would raise.
+    # read_trajectories runs _validate_stratification and would raise on a broken invariant
     loaded = read_trajectories(tmp_path / "train.h5")
 
     assert loaded.encounter_bin_id.shape == (3,)
@@ -434,7 +398,6 @@ def test_stratified_round_trips_through_write_and_read(tmp_path: Path) -> None:
     assert loaded.min_pairwise_distance.shape == (3,)
     assert loaded.encounter_bins == _STRAT_BINS
 
-    # bin id <-> name agreement holds for every row
     name_by_id = {i: b.name for i, b in enumerate(_STRAT_BINS)}
     for i in range(3):
         assert str(loaded.encounter_bin_name[i]) == name_by_id[int(loaded.encounter_bin_id[i])]

@@ -142,14 +142,7 @@ def subset_rollout_mse(
     rollout_mse: RolloutMSE,
     mask: npt.NDArray[np.bool_],
 ) -> RolloutMSE:
-    """Re-aggregate a rollout MSE over the per-trajectory subset selected by mask.
-
-    Used by stratified evaluation to compute per-bin rollout summaries from
-    an already-computed RolloutMSE, skipping a full re-run of the rollout.
-    Empty masks (no trajectories in this bin) yield NaN curves so callers can
-    surface "no data" without RuntimeWarnings from aggregation over an empty
-    axis.
-    """
+    """Re-aggregate a rollout MSE over the masked subset; empty masks yield NaN curves."""
     return RolloutMSE(
         state=_subset_rollout_metric_series(rollout_mse.state, mask),
         position=_subset_rollout_metric_series(rollout_mse.position, mask),
