@@ -115,6 +115,49 @@ def test_potential_network_shape() -> None:
     assert V.shape == (4,)
 
 
+def test_kinetic_decompose_matches_forward() -> None:
+    """KineticNetwork.decompose gives per-particle T_i that sums to forward."""
+    kinetic = KineticNetwork(hidden_dim=64)
+    v = torch.randn(4, 3, 2)
+    m = torch.ones(4, 3, 1)
+
+    per_particle = kinetic.decompose(v, m)
+
+    assert per_particle.shape == (4, 3)
+    assert torch.allclose(per_particle.sum(dim=-1), kinetic(v, m))
+
+
+def test_potential_decompose_matches_forward() -> None:
+    """PotentialNetwork.decompose totals match forward and part shapes are correct."""
+    potential = PotentialNetwork(hidden_dim=64, n_layers=4)
+    x = torch.randn(4, 3, 2)
+    m = torch.ones(4, 3, 1)
+
+    parts = potential.decompose(x, m)
+
+    assert parts.v_i.shape == (4, 3)
+    assert parts.v_ij.shape == (4, 3, 3)
+    assert parts.d_ij.shape == (4, 3, 3)
+    assert torch.allclose(parts.total, potential(x, m))
+    assert torch.allclose(parts.v_node + parts.v_edge, parts.total)
+
+
+def test_energies_match_hamiltonian() -> None:
+    """HGNN.energies returns (T, V) that sum to the hamiltonian."""
+    model = HGNN()
+    model.eval()
+    state = _make_state()
+
+    kinetic_energy, potential_energy = model.energies(state)
+    x = state[..., :2] / model.pos_std
+    v = state[..., 2:4] / model.vel_std
+    m = state[..., 4:]
+
+    assert kinetic_energy.shape == (4,)
+    assert potential_energy.shape == (4,)
+    assert torch.allclose(kinetic_energy + potential_energy, model.hamiltonian(x, v, m))
+
+
 def test_free_fall_at_init() -> None:
     """With tiny-init V, one forward step is near-pure drift (v unchanged, x moves by ~dt*v)."""
     model = HGNN(dt=0.05)

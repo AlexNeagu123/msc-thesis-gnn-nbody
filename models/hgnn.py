@@ -7,8 +7,22 @@ References:
     - PySR (Cranmer, 2023): https://github.com/MilesCranmer/PySR
 """
 
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor, nn
+
+
+@dataclass(frozen=True)
+class PotentialParts:
+    """Per-component breakdown of the potential energy for one batch."""
+
+    total: Tensor
+    v_node: Tensor
+    v_edge: Tensor
+    v_i: Tensor
+    v_ij: Tensor
+    d_ij: Tensor
 
 
 class KineticNetwork(nn.Module):
@@ -33,11 +47,14 @@ class KineticNetwork(nn.Module):
             nn.Linear(h, 1, bias=False),
         )
 
+    def decompose(self, v: Tensor, m: Tensor) -> Tensor:
+        """Per-particle kinetic energy T_i, before the sum over particles."""
+        h0 = self.mlp_embed(torch.cat([v, m], dim=-1))
+        return self.mlp_T(h0).squeeze(-1)
+
     def forward(self, v: Tensor, m: Tensor) -> Tensor:
         """Compute total kinetic energy per sample."""
-        h0 = self.mlp_embed(torch.cat([v, m], dim=-1))
-        T_per_particle = self.mlp_T(h0).squeeze(-1)
-        return T_per_particle.sum(dim=-1)
+        return self.decompose(v, m).sum(dim=-1)
 
 
 class PotentialMPLayer(nn.Module):
@@ -127,8 +144,8 @@ class PotentialNetwork(nn.Module):
             e_out,
         )
 
-    def forward(self, x: Tensor, m: Tensor) -> Tensor:
-        """Compute total potential energy per sample."""
+    def decompose(self, x: Tensor, m: Tensor) -> PotentialParts:
+        """Per-node, per-edge, and total potential energy for one batch."""
         n = x.size(1)
 
         dx = x.unsqueeze(2) - x.unsqueeze(1)
@@ -150,7 +167,18 @@ class PotentialNetwork(nn.Module):
         i_idx, j_idx = torch.triu_indices(n, n, offset=1, device=x.device)
         V_edge = V_ij[:, i_idx, j_idx].sum(dim=-1)
 
-        return V_node + V_edge
+        return PotentialParts(
+            total=V_node + V_edge,
+            v_node=V_node,
+            v_edge=V_edge,
+            v_i=V_i,
+            v_ij=V_ij,
+            d_ij=d_ij.squeeze(-1),
+        )
+
+    def forward(self, x: Tensor, m: Tensor) -> Tensor:
+        """Compute total potential energy per sample."""
+        return self.decompose(x, m).total
 
 
 class HGNN(nn.Module):
@@ -182,6 +210,13 @@ class HGNN(nn.Module):
     def hamiltonian(self, x: Tensor, v: Tensor, m: Tensor) -> Tensor:
         """Compute H = T + V in normalized coordinates."""
         return self.kinetic(v, m) + self.potential(x, m)
+
+    def energies(self, state: Tensor) -> tuple[Tensor, Tensor]:
+        """Return (T, V) for a raw state [x, y, vx, vy, m], normalizing as forward does."""
+        x = state[..., :2] / self.pos_std
+        v = state[..., 2:4] / self.vel_std
+        m = state[..., 4:]
+        return self.kinetic(v, m), self.potential(x, m)
 
     def forward(self, state: Tensor) -> Tensor:
         """Predict next state from current state via one leapfrog step.
