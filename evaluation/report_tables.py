@@ -198,7 +198,7 @@ def write_report_markdown(
             ],
         ),
         "",
-        "## Distance Cluster Layout",
+        "## Trajectory Class Layout",
         "",
         _markdown_table(
             ["Cluster", "lo", "hi", "Count"],
@@ -208,9 +208,9 @@ def write_report_markdown(
             ],
         ),
         "",
-        "## Headline: Metrics by Distance Cluster",
+        "## Headline: Metrics by Trajectory Class",
         "",
-        "Final-step median position MSE and final relative energy drift, grouped by closest-approach distance. Lower is better for both; raw physical units, no normalisation. Position MSE is the audience-facing forecast quality metric (state and velocity MSE remain available in metrics.json and the technical CSVs). See the rollout position MSE and energy drift figures for the full time dynamics.",
+        "Final-step median position MSE and final relative energy drift, grouped by trajectory class. Lower is better for both; raw physical units, no normalisation. Position MSE is the audience-facing forecast quality metric (state and velocity MSE remain available in metrics.json and the technical CSVs). See the rollout position MSE and energy drift figures for the full time dynamics.",
         "",
         _markdown_table(
             [
@@ -264,7 +264,7 @@ def _chunked_section_lines(section: ChunkedReportSection) -> list[str]:
             "> **This is not autonomous simulation.** "
             "EGNN and HGNN are re-anchored to the ground truth every K rollout steps; "
             "the metric below is the median endpoint position MSE across trajectories "
-            "in each distance cluster."
+            "in each trajectory class."
         ),
         "",
         (
@@ -273,7 +273,7 @@ def _chunked_section_lines(section: ChunkedReportSection) -> list[str]:
             f"(equivalently, median endpoint position MSE <= {USABLE_K_POSITION_MSE_THRESHOLD})."
         ),
         "",
-        "### Largest usable K per distance cluster and model",
+        "### Largest usable K per trajectory class and model",
         "",
         _chunked_usable_k_table(section),
         "",

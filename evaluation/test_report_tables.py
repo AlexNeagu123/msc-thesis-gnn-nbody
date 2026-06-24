@@ -313,7 +313,7 @@ def test_report_markdown_headline_uses_physical_metrics(tmp_path: Path) -> None:
     )
 
     md = (tmp_path / "report.md").read_text()
-    assert "Headline: Per-bin Physical Metrics" in md
+    assert "Headline: Metrics by Trajectory Class" in md
     assert "EGNN final position MSE" in md
     assert "HGNN final position MSE" in md
     assert "Baseline final position MSE" in md

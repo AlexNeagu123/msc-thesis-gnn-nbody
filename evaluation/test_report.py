@@ -437,7 +437,7 @@ def test_run_emits_chunked_section_when_chunked_dir_present(tmp_path: Path) -> N
     assert "## Short-horizon corrected forecasting" in md
     assert "**This is not autonomous simulation.**" in md
     assert "median endpoint position MSE <= 0.25" in md
-    assert "### Largest usable K per bin and model" in md
+    assert "### Largest usable K per trajectory class and model" in md
     # extreme bin: EGNN k=1 (0.005) and k=3 (0.10) both qualify -> largest is K=3.
     # HGNN k=1 (0.04) qualifies, k=3 (0.30) does not -> largest is K=1.
     # baseline never qualifies -> none.
