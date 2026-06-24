@@ -1,4 +1,4 @@
-[![CI](https://github.com/AlexNeagu123/msc-thesis-gnn-nbody/actions/workflows/ci.yaml/badge.svg)](https://github.com/AlexNeagu123/msc-thesis-gnn-nbody/actions/workflows/ci.yaml)
+[![CI](https://github.com/AlexNeagu123/msc-thesis-gnn-nbody/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/AlexNeagu123/msc-thesis-gnn-nbody/actions/workflows/ci.yaml?query=branch%3Amain)
 
 # msc-thesis-gnn-nbody
 
@@ -182,4 +182,3 @@ Notebooks are kept as execution artifacts and are excluded from Ruff linting and
 - `runs/` and `data/output/` are ignored because they contain generated artifacts.
 - `evaluation/evaluate_chunked.py` is supplementary tooling for short-horizon corrected forecasts. It is not central to the thesis narrative, but it is tested and integrated into the report generator when chunked artifacts are present.
 - The top-level workflow and module responsibilities are described in more detail in `docs/product-specification.md` and `docs/repository-architecture.md`.
-
