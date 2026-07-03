@@ -2,7 +2,7 @@
 
 # msc-thesis-gnn-nbody
 
-Implementation repository for the thesis **Learning Three-Body Dynamics with Graph Neural Networks**.
+Implementation repository for the thesis **Learning Gravitational Three-Body Dynamics with Equivariant and Hamiltonian Graph Neural Networks**.
 
 The code compares two graph neural-network models on a shared gravitational three-body benchmark:
 
@@ -10,6 +10,21 @@ The code compares two graph neural-network models on a shared gravitational thre
 - **HGNN**, a Hamiltonian Graph Neural Network that learns a decomposed Hamiltonian and advances the state with a velocity-Verlet update.
 
 The repository contains the full workflow used in the thesis: dataset generation, model implementation, training, evaluation, report generation, trajectory animations, and symbolic-regression analysis.
+
+## Setup
+
+The project requires Python 3.12 or later. The recommended reproducible setup uses the
+dependency definitions and lock file committed to this repository:
+
+```bash
+uv sync --all-groups
+```
+
+Alternatively, install the complete environment with pip:
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 ## Repository Map
 

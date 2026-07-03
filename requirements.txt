@@ -1,8 +1,13 @@
 h5py>=3.16.0
-matplotlib>=3.10.0
-numpy>=2.2.0
+ipykernel>=7.2.0
+matplotlib>=3.10.8
+numpy>=2.2.6
+pytest>=9.0.3
+pysr>=1.5.10
 pyyaml>=6.0.3
 rebound>=4.6.0
+ruff>=0.15.9
 seaborn>=0.13.2
+torch>=2.11.0
 torchinfo>=1.8.0
-tqdm>=4.67.0
+tqdm>=4.67.3
