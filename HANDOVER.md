@@ -30,6 +30,14 @@ This creates three whole-trajectory splits under `data/output/daniela-rk4/`:
 - `val.h5` — **80 trajectories** (used to pick the best checkpoint based on 1,999-step rollout position MAE)
 - `test.h5` — **100 trajectories** (used for final comparison after the best validation checkpoint is selected)
 
+### How the Code is Organised (PyTorch for HGNN, TensorFlow/Keras for GNODE & PI-GNN)
+
+To be completely clear about what was adapted and what was kept in its original framework:
+
+1. **GNODE and PI-GNN were NOT rewritten in PyTorch:** They are still TensorFlow/Keras models. We extracted the model definitions and training loops out of Daniela's original Jupyter notebooks (`2_training.ipynb` and `3_testing.ipynb` in `nbody-net`) into standalone Python modules under [`competitors/`](competitors/) so we could load her original `.weights.h5` checkpoints directly and retrain her models on the shared `320 / 80` split with her exact Keras layers and `Adam` settings.
+2. **HGNN was adapted in PyTorch for Daniela's dataset:** The original thesis HGNN (`models/hgnn.py`) assumed equal masses. We created [`models/hgnn_canonical.py`](models/hgnn_canonical.py) in PyTorch to handle Daniela's per-body masses (`p = m * v`), and added Daniela's gravity loss and exact kinetic energy controls in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py).
+3. **Shared dataset & pure-NumPy evaluation:** Both the PyTorch (HGNN) and TensorFlow (GNODE/PI-GNN) scripts train on the exact same `.h5` splits (`train.h5`, `val.h5`, `test.h5`) and export their 1,999-step predicted rollouts as NumPy arrays to be scored by the same evaluation script ([`evaluation/rk4_metrics.py`](evaluation/rk4_metrics.py)).
+
 ---
 
 ## 3. Code Map for the Experiments
