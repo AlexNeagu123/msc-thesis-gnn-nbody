@@ -44,6 +44,23 @@ I used `train.h5` for training and `val.h5` for checkpoint selection across all 
 
 ## 3. Code Map for the Experiments
 
+### How the competitor files fit together
+
+I added the TensorFlow experiments in stages. The folders share code, with each later experiment adding settings or changing a training step.
+
+- [`gnode_pignn_tf/models.py`](competitors/gnode_pignn_tf/models.py) defines the **network layers**.
+- [`gnode_pignn_training/`](competitors/gnode_pignn_training/) provides the **shared training code**. Its `recipes.py` holds settings such as learning rate and batch size; `engine.py` builds the model, computes the loss and applies Adam updates; `production.py` manages the training run.
+- [`pignn_ablation/recipes.py`](competitors/pignn_ablation/recipes.py) defines **A00, A01, A10 and A11** by changing the shared PI-GNN settings. Its `production.py` provides the guarded runner for A10 and A01.
+- [`ablation_controls/recipes.py`](competitors/ablation_controls/recipes.py) names the **later controls**, such as clipping or a different position update. `tf_adapters.py` translates those choices into TensorFlow settings and training steps. Separate experiment runners supply the training loop.
+
+Here, **“recipe” means a collection of settings**. For example, the clipped PI-GNN experiment follows this chain:
+
+```text
+Shared PI-GNN settings → A10 force target → clip norm 1.0 → PairEngine
+```
+
+Inside `tf_adapters.py`, `GNODERecipe` and `PairRecipe` connect the control settings to the engines. `_Cursor` saves the position in the training schedule so a checkpoint can resume at the right batch.
+
 ### A. HGNN (Hamiltonian Graph Neural Network)
 - **Model code:** [`models/hgnn_canonical.py`](models/hgnn_canonical.py)
 - **Training & validation scripts:** [`training/run_cpu_rk4.py`](training/run_cpu_rk4.py), [`training/cpu_microbatch.py`](training/cpu_microbatch.py), [`training/fixed_validation.py`](training/fixed_validation.py)
