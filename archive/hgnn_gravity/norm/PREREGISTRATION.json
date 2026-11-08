@@ -1,0 +1,16 @@
+{
+  "run": "daniela-hgnn-gravity-norm-v1",
+  "authorisation": "User authorised implementation and sequential launch of both experiments",
+  "protocol_readme": "runs/daniela-norm-gnode-sequential-v1/README.md",
+  "protocol_readme_sha256": "174e1677655bf79154460c6ab1a7189ba4cfb5a414ea7733673289ba7a1b1248",
+  "seed": 42,
+  "updates": 2500,
+  "logical_batch": 64,
+  "micro_batch": 16,
+  "selection": "minimum eligible full1999 future VAL80 MAE; earlier exact ties",
+  "existing100_read": false,
+  "initialization": "fresh; no disposable weights",
+  "acceleration_mean_square": 882.8257392887597,
+  "physics_weight": 0.1,
+  "additive_softening": 0.0025000000000000005
+}

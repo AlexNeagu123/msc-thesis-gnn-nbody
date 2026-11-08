@@ -1,0 +1,98 @@
+{
+  "soft005/adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/adapter.py",
+    "sha256": "f81a5c3613630cfb90cde51a72288fab20cb638a6b4d303f9f1b8add596b9f14"
+  },
+  "soft005/runner.py": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/runner.py",
+    "sha256": "21bb488441d4e492cd0b8c27e43c89c48bbbfbf4bd67d04ad33d72a4c88a07dc"
+  },
+  "soft005/preflight.py": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/preflight.py",
+    "sha256": "67cba44bb799b2ea7ebbebd427289550a6e7eb3922b65b95878ba4e359dcd51b"
+  },
+  "soft005/test_adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/test_adapter.py",
+    "sha256": "4f8c0311005d0cad3d669e5be8f44dfe84fa0446fedd3edd501c633c952e1a8d"
+  },
+  "soft005/PREREGISTRATION.json": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/PREREGISTRATION.json",
+    "sha256": "a65b3ce5b4f9c884ac93ffaa66b744d16b698704860799a34017c446116a3729"
+  },
+  "soft005/READY.json": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/READY.json",
+    "sha256": "e33ddd4f289177875fb68a248b09d47abca2e0346280d131e27d3d3f884576be"
+  },
+  "soft005/staged-order.npy": {
+    "original": "runs/daniela-hgnn-gravity-soft005-v1/staged-order.npy",
+    "sha256": "13c91c8b69f57dc6036e286d0a76acef5dda1885620cdaeb3e4d19ccc911f0ba"
+  },
+  "genforce/adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/adapter.py",
+    "sha256": "f61c380bcc85c6d0949e08f9bb00a546b51254bf2a6d99eb3bc0dcd22dab4585"
+  },
+  "genforce/runner.py": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/runner.py",
+    "sha256": "82d628112ed6f1d991c5f5d40d1c65b4da2512144a41f8f78387dc798c01d98d"
+  },
+  "genforce/preflight.py": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/preflight.py",
+    "sha256": "ac2463d1490e1137ee197c881b5bf42e53d6b85abb791a8fbf044a394d97c9b4"
+  },
+  "genforce/test_adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/test_adapter.py",
+    "sha256": "10861e11efaddf1ffadb84188a4b6a47d6fda2e9a7124960702fac70da0f82b6"
+  },
+  "genforce/PREREGISTRATION.json": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/PREREGISTRATION.json",
+    "sha256": "baff27183a9f314102ad294ebee0dceccf0ac49b3c498672e6787117d0a05ad6"
+  },
+  "genforce/READY.json": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/READY.json",
+    "sha256": "8de8f8e452ea3de0ecde69bdc439191f0d9e6ffe888be43f5adc60213b7f7eb4"
+  },
+  "genforce/staged-order.npy": {
+    "original": "runs/daniela-hgnn-gravity-genforce-v1/staged-order.npy",
+    "sha256": "13c91c8b69f57dc6036e286d0a76acef5dda1885620cdaeb3e4d19ccc911f0ba"
+  },
+  "norm/adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/adapter.py",
+    "sha256": "bd442c9c9f96353d521dc079cdab6e89f2b6b7311ac95ef50154a208e40cffc5"
+  },
+  "norm/runner.py": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/runner.py",
+    "sha256": "da4db385e1497b55fd41ccf1b25cf62e8c0eb0c7dfee412cf7ca979a686948a9"
+  },
+  "norm/preflight.py": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/preflight.py",
+    "sha256": "85e15f27a8623926cf0789272552653bc573ef5957df8e180de743215447b624"
+  },
+  "norm/test_adapter.py": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/test_adapter.py",
+    "sha256": "a4433574a1647a7118c895942cb7a6a18c8392c29a0ffb6663fb970a505bac55"
+  },
+  "norm/PREREGISTRATION.json": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/PREREGISTRATION.json",
+    "sha256": "4d7e280c25774f45da8bff1d927b8027e3a58dad2dffc75b3b2e85652fa90be6"
+  },
+  "norm/READY.json": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/READY.json",
+    "sha256": "09afdcd84b8629578e6f12034e6b0aa99a022fc29165544bcfab591466d66aa9"
+  },
+  "norm/staged-order.npy": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/staged-order.npy",
+    "sha256": "13c91c8b69f57dc6036e286d0a76acef5dda1885620cdaeb3e4d19ccc911f0ba"
+  },
+  "norm/compute_scale.py": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/compute_scale.py",
+    "sha256": "90f3219b3423d8ba0eb206c7a229a460e3f066dda85b4d2c3e995d472e80a436"
+  },
+  "norm/acceleration_scale.json": {
+    "original": "runs/daniela-hgnn-gravity-norm-v1/acceleration_scale.json",
+    "sha256": "50f2e41d70f91b17449203bc1c03cb39b903f9bb8861703e60f9fdf5452d1a80"
+  },
+  "historical-assigned-batches.npz": {
+    "original": "runs/daniela-hgnn-order-reconstruction-audit-v1/historical-assigned-batches.npz",
+    "sha256": "e16c618a59cf320c619d8249442b12b469b9bef3c0dc269782ea2bf7002e5d06"
+  }
+}

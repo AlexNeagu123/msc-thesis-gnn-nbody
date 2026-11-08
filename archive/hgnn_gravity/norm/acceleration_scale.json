@@ -1,0 +1,11 @@
+{
+  "mean_square": 882.8257392887597,
+  "rms": 29.712383601602205,
+  "component_mean": -0.0041626146450987,
+  "definition": "uncentred mean square over TRAIN320 all2000 frames, 3 bodies, 2 components",
+  "additive_softening": 0.0025000000000000005,
+  "count": 3840000,
+  "train_sha256": "b1237f9e0831758b2cf56a82167cfbd5ba84e6eb52e428ea7e53e5c9187695bf",
+  "independent_numpy_target_verified": true,
+  "script_sha256": "90f3219b3423d8ba0eb206c7a229a460e3f066dda85b4d2c3e995d472e80a436"
+}

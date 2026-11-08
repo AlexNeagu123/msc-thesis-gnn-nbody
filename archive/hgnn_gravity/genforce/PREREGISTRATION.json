@@ -1,0 +1,19 @@
+{
+  "arm": "genforce",
+  "name": "daniela-hgnn-gravity-genforce-v1",
+  "seed": 42,
+  "updates": 2500,
+  "rounds": 25,
+  "logical_batch": 64,
+  "micro_batch": 16,
+  "order": "identity historical staged order (0..2499)",
+  "additive_softening": 0.0025000000000000005,
+  "physics_weight": 0.1,
+  "c9_gravity_loss": "Yes",
+  "c10_generator_force": "Yes",
+  "selection": "minimum eligible full1999-future VAL80 position MAE; earlier exact ties",
+  "existing100_read": false,
+  "fresh_initialisation": true,
+  "production_warm_start": false,
+  "integrator": "Symplectic KDK (dt=0.001, identical to baseline CanonicalHGNN)"
+}

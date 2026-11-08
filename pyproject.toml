@@ -29,7 +29,8 @@ interp = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["colab/", "*.ipynb", "runs/", "results/", "data/output/"]
+# Keep archived experiment code unchanged.
+extend-exclude = ["colab/", "*.ipynb", "runs/", "results/", "data/output/", "archive/"]
 
 [tool.ruff.lint]
 select = [
@@ -71,7 +72,7 @@ indent-style = "space"
 testpaths = ["."]
 pythonpath = ["."]
 addopts = "--import-mode=importlib"
-norecursedirs = ["runs", "results", "data/output", ".venv", ".git"]
+norecursedirs = ["runs", "results", "data/output", ".venv", ".git", "archive"]
 
 [tool.pyright]
 include = ["."]

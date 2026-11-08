@@ -70,15 +70,21 @@ The three variants are:
 
 Here, `s` appears in the gravity denominator as `(distance_squared + s)**1.5`.
 
-The original adapters are stored locally at:
+I included the original experiment code in [`archive/hgnn_gravity/`](archive/hgnn_gravity/):
 
-```text
-runs/daniela-hgnn-gravity-soft005-v1/adapter.py
-runs/daniela-hgnn-gravity-genforce-v1/adapter.py
-runs/daniela-hgnn-gravity-norm-v1/adapter.py
-```
+| Experiment | Loss code | Training runner |
+|---|---|---|
+| Row 11: additive `s=0.05` | [`soft005/adapter.py`](archive/hgnn_gravity/soft005/adapter.py) | [`soft005/runner.py`](archive/hgnn_gravity/soft005/runner.py) |
+| Row 12: generator force | [`genforce/adapter.py`](archive/hgnn_gravity/genforce/adapter.py) | [`genforce/runner.py`](archive/hgnn_gravity/genforce/runner.py) |
+| Row 13: scaled gravity | [`norm/adapter.py`](archive/hgnn_gravity/norm/adapter.py) | [`norm/runner.py`](archive/hgnn_gravity/norm/runner.py) |
 
-`runs/` is excluded from Git. These files still use the original module and config names from the experiments.
+Each folder also contains its preflight script, tests, batch order and original run setup records. The shared batch assignments are in [`historical-assigned-batches.npz`](archive/hgnn_gravity/historical-assigned-batches.npz). For the scaled variant, I included [`compute_scale.py`](archive/hgnn_gravity/norm/compute_scale.py) and [`acceleration_scale.json`](archive/hgnn_gravity/norm/acceleration_scale.json).
+
+I copied these files unchanged from the completed experiments. [`files.json`](archive/hgnn_gravity/files.json) records their original locations and SHA-256 checksums.
+
+**Running the archived code:** It uses the original `runs/` layout, module names and config names. A new run needs those paths updated, a separate output folder and fresh readiness checks. `READY.json` records the checks made for the original run. The archive is excluded from automatic formatting and test collection so its contents stay unchanged.
+
+Checkpoints and generated outputs remain in the local, Git-ignored `runs/` directory.
 
 For the later controls, I put the model and loss functions in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py):
 
@@ -95,9 +101,9 @@ The training loop selects and calls these functions. The links below point to th
 | 8 | `HGNN: Shuffled Horizons` | 42 | `0.0821` | `0.0900` | [`configs/hgnn-shuffled-horizons-v1.yaml`](configs/hgnn-shuffled-horizons-v1.yaml) |
 | 9 | `HGNN: Staged` | 43 | `0.0494` | `0.0469` | [`configs/hgnn-staged-seed43-v1.yaml`](configs/hgnn-staged-seed43-v1.yaml) |
 | 10 | `HGNN: Shuffled Horizons` | 43 | `0.1087` | `0.1066` | [`configs/hgnn-shuffled-seed43-v1.yaml`](configs/hgnn-shuffled-seed43-v1.yaml) |
-| 11 | `HGNN: Gravity Loss (s=0.05)` | 42 | `0.1712` | `0.2016` | [`configs/hgnn-gravity-soft005-v1.yaml`](configs/hgnn-gravity-soft005-v1.yaml) |
-| 12 | `HGNN: Gravity Loss (Gen Force)` | 42 | `0.1266` | `0.1325` | [`configs/hgnn-gravity-genforce-v1.yaml`](configs/hgnn-gravity-genforce-v1.yaml) |
-| 13 | `HGNN: Scaled Gravity Loss` | 42 | `0.0817` | `0.0843` | [`configs/hgnn-gravity-norm-v1.yaml`](configs/hgnn-gravity-norm-v1.yaml) |
+| 11 | `HGNN: Gravity Loss (s=0.05)` | 42 | `0.1712` | `0.2016` | [`YAML`](configs/hgnn-gravity-soft005-v1.yaml) · [`loss code`](archive/hgnn_gravity/soft005/adapter.py) |
+| 12 | `HGNN: Gravity Loss (Gen Force)` | 42 | `0.1266` | `0.1325` | [`YAML`](configs/hgnn-gravity-genforce-v1.yaml) · [`loss code`](archive/hgnn_gravity/genforce/adapter.py) |
+| 13 | `HGNN: Scaled Gravity Loss` | 42 | `0.0817` | `0.0843` | [`YAML`](configs/hgnn-gravity-norm-v1.yaml) · [`loss code`](archive/hgnn_gravity/norm/adapter.py) |
 | 14 | **`HGNN: Exact Kinetic (T)`** | 42 | **`0.0431`** | *Pending* | [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py) |
 | 15 | `HGNN: Exact T + Scaled Grav` | 42 | `0.0717` | *Pending* | [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py) |
 | 16 | `HGNN: Exact Kinetic (T)` | 43 | `0.0473` | *Pending* | [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py) |
