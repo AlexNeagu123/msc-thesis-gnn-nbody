@@ -127,6 +127,9 @@ The training loop selects and calls these functions. The links below point to th
 ---
 
 ### C. PI-GNN (Physics-Informed Direct Acceleration Network)
+
+Start with the [PI-GNN README](competitors/pignn_ablation/README.md) for the A00/A01/A10/A11 variants and their loss. The [controls README](competitors/ablation_controls/README.md) explains clipping, pair order and the central-force network.
+
 - **Model & training recipes:** [`competitors/pignn_ablation/recipes.py`](competitors/pignn_ablation/recipes.py)
 - **Clipping, pair-shuffling & central-force controls:** [`competitors/ablation_controls/tf_adapters.py`](competitors/ablation_controls/tf_adapters.py)
 
@@ -142,7 +145,7 @@ The training loop selects and calls these functions. The links below point to th
 
 ## 4. Follow-Up Experiments Already Implemented in Code
 
-The [`competitors/ablation_controls/`](competitors/ablation_controls/) package also contains tested implementations for three follow-up ideas if anyone wants to run them next:
+I also implemented three follow-up ideas in [`competitors/ablation_controls/`](competitors/ablation_controls/). Its [README](competitors/ablation_controls/README.md) explains the code and which experiments have results:
 
 1. **Matched-tail curriculum (`hgnn_matched_tail` in `schedule.py`):** Shuffles the first 2,000 training batches (`h=1, 5, 20, 50`) while keeping the last 500 `h=100` batches in the exact same order.
 2. **Shuffled training pairs for PI-GNN (`pi_shuffled_unclipped` in `tf_adapters.py`):** Shuffles the 639,680 training pairs each epoch instead of training on trajectories in sequential order.
