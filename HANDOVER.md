@@ -28,15 +28,17 @@ python -m data.import_daniela
 This creates three whole-trajectory splits under `data/output/daniela-rk4/`:
 - `train.h5` — **320 trajectories** (used for training)
 - `val.h5` — **80 trajectories** (used to pick the best checkpoint based on 1,999-step rollout position MAE)
-- `test.h5` — **100 trajectories** (used for final comparison after the best validation checkpoint is selected)
+- `test.h5` — **100 trajectories** (extra comparison after checkpoint selection; I had already inspected this set during development)
 
-### How the Code is Organised (PyTorch for HGNN, TensorFlow/Keras for GNODE & PI-GNN)
+In the tables below, *Pending* means I have yet to evaluate that checkpoint on the 100-system set. For stopped runs, the VAL80 score is the best eligible checkpoint saved before the run stopped.
 
-To be completely clear about what was adapted and what was kept in its original framework:
+### Frameworks and model code
 
-1. **GNODE and PI-GNN were NOT rewritten in PyTorch:** They are still TensorFlow/Keras models. We extracted the model definitions and training loops out of Daniela's original Jupyter notebooks (`2_training.ipynb` and `3_testing.ipynb` in `nbody-net`) into standalone Python modules under [`competitors/`](competitors/) so we could load her original `.weights.h5` checkpoints directly and retrain her models on the shared `320 / 80` split with her exact Keras layers and `Adam` settings.
-2. **HGNN was adapted in PyTorch for Daniela's dataset:** The original thesis HGNN (`models/hgnn.py`) assumed equal masses. We created [`models/hgnn_canonical.py`](models/hgnn_canonical.py) in PyTorch to handle Daniela's per-body masses (`p = m * v`), and added Daniela's gravity loss and exact kinetic energy controls in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py).
-3. **Shared dataset & pure-NumPy evaluation:** Both the PyTorch (HGNN) and TensorFlow (GNODE/PI-GNN) scripts train on the exact same `.h5` splits (`train.h5`, `val.h5`, `test.h5`) and export their 1,999-step predicted rollouts as NumPy arrays to be scored by the same evaluation script ([`evaluation/rk4_metrics.py`](evaluation/rk4_metrics.py)).
+**GNODE and PI-GNN use TensorFlow/Keras.** I turned the model and training code from the original `nbody-net` notebooks into Python modules under [`competitors/`](competitors/). My aim was to retrain the same architectures on the shared split, keeping their parameter counts: **83,714 for GNODE** and **34,690 for PI-GNN**. Keeping Keras also let me load the original checkpoints and check the predictions.
+
+**HGNN uses PyTorch.** I built [`models/hgnn_canonical.py`](models/hgnn_canonical.py) for the variable-mass dataset, using momentum `p = m * v`. I also implemented gravity-loss variants and an exact-kinetic-energy version.
+
+I used `train.h5` for training and `val.h5` for checkpoint selection across all three model families. I scored their predicted trajectories with the same NumPy/float64 metrics in [`evaluation/rk4_metrics.py`](evaluation/rk4_metrics.py).
 
 ---
 
@@ -47,21 +49,44 @@ To be completely clear about what was adapted and what was kept in its original 
 - **Training & validation scripts:** [`training/run_cpu_rk4.py`](training/run_cpu_rk4.py), [`training/cpu_microbatch.py`](training/cpu_microbatch.py), [`training/fixed_validation.py`](training/fixed_validation.py)
 - **Exact kinetic energy ($T = \sum p_i^2 / 2m_i$) & gravity loss controls:** [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py)
 
-### HGNN loss implementation
+#### Where the loss is defined
 
-The YAML files specify the model size, data paths, optimizer settings, trajectory loss (`training.loss: mse`), elapsed-time scaling (`training.dynamic_loss_scaling: elapsed_time_v1`), and curriculum. Each gravity experiment uses a custom Python runner and `GravityLossHGNNTrainer` in its experiment directory under `runs/`. The trainer adds an initial-state acceleration loss to the trajectory loss, with weight `0.1` defined in Python.
+I split the gravity experiments between YAML settings and Python training code.
 
-| Sheet row | Gravity objective | Historical implementation |
-|---:|---|---|
-| 11 | `Ltraj + 0.1 * MSE(ahat0, agrav0)`; additive softening `s=0.05` | `runs/daniela-hgnn-gravity-soft005-v1/adapter.py` |
-| 12 | `Ltraj + 0.1 * MSE(ahat0, agrav0)`; additive softening `s=0.05**2` | `runs/daniela-hgnn-gravity-genforce-v1/adapter.py` |
-| 13 | `Ltraj + 0.1 * MSE(ahat0, agrav0) / 882.8257392887597`; additive softening `s=0.05**2` | `runs/daniela-hgnn-gravity-norm-v1/adapter.py` |
+**The YAML files hold the usual training settings:** model size, data paths, learning rate, batch size and curriculum. These two fields select the trajectory loss and its scaling:
 
-Here, `ahat0 = -(dV/dq)/m` is the acceleration from the learned potential at the starting state. `agrav0` is analytical gravity, using `(distance_squared + s)**1.5` in the denominator. The scaled variant reads its TRAIN acceleration mean square from `acceleration_scale.json` in the experiment directory.
+```yaml
+loss: mse
+dynamic_loss_scaling: elapsed_time_v1
+```
 
-The reusable implementation in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py) exposes `objective(..., gravity="off")` and `objective(..., gravity="scaled")`. `KineticAblationHGNN(kinetic="exact")` supplies the exact kinetic energy used in rows 14–17; the training loop calls the objective with the chosen gravity setting.
+**I added the gravity term in Python**, in each experiment's `adapter.py`. It compares the acceleration from the learned potential, `-(dV/dq)/m`, with analytical gravity at the starting state of each training example.
 
-**File locations:** The table below links to YAML settings and reusable modules. Historical runners and their supporting files are stored locally under the Git-ignored `runs/` directory. Those historical files retain their original module/config paths; the handover code uses the renamed paths shown here.
+The three variants are:
+
+- **Row 11:** trajectory loss + `0.1 × acceleration MSE`, with additive softening `s = 0.05`.
+- **Row 12:** the same loss, with `s = 0.05**2` to match the generator's force formula.
+- **Row 13:** the row 12 gravity term divided by `882.8257392887597`, the TRAIN acceleration mean square.
+
+Here, `s` appears in the gravity denominator as `(distance_squared + s)**1.5`.
+
+The original adapters are stored locally at:
+
+```text
+runs/daniela-hgnn-gravity-soft005-v1/adapter.py
+runs/daniela-hgnn-gravity-genforce-v1/adapter.py
+runs/daniela-hgnn-gravity-norm-v1/adapter.py
+```
+
+`runs/` is excluded from Git. These files still use the original module and config names from the experiments.
+
+For the later controls, I put the model and loss functions in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py):
+
+- `objective(..., gravity="off")` uses the trajectory loss.
+- `objective(..., gravity="scaled")` adds the scaled gravity term above.
+- `KineticAblationHGNN(kinetic="exact")` uses `T = sum(p² / 2m)`.
+
+The training loop selects and calls these functions. The links below point to the YAML settings or model/loss module for each result.
 
 | Sheet Row | Experiment | Seed | VAL80 MAE | 100-System MAE | Settings / Module |
 |---:|---|---:|---:|---:|---|
