@@ -2,19 +2,25 @@
 
 # Configure deterministic TF before its first import; compact test signatures.
 # ruff: noqa: E402, ANN001, ANN201, D103, PT006
+import importlib.util
+
+import pytest
+
+if importlib.util.find_spec("tensorflow") is None:
+    pytest.skip("tensorflow not installed", allow_module_level=True)
+
 from competitors.gnode_pignn_training.production import runtime
 
 runtime()
 
 import numpy as np
-import pytest
 import tensorflow as tf
 
-from competitors.pignn_ablation.recipes import CELLS, scientific_delta
 from competitors.gnode_pignn_training.checkpoint import restore_checkpoint, save_checkpoint
 from competitors.gnode_pignn_training.data import PairSampler
 from competitors.gnode_pignn_training.engine import StepEngine, acceleration_target, projected_state
 from competitors.gnode_pignn_training.recipes import RECIPES
+from competitors.pignn_ablation.recipes import CELLS, scientific_delta
 
 
 @pytest.mark.parametrize(

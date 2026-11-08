@@ -29,7 +29,7 @@ interp = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["colab/", "*.ipynb"]
+extend-exclude = ["colab/", "*.ipynb", "runs/", "results/", "data/output/"]
 
 [tool.ruff.lint]
 select = [
@@ -71,6 +71,7 @@ indent-style = "space"
 testpaths = ["."]
 pythonpath = ["."]
 addopts = "--import-mode=importlib"
+norecursedirs = ["runs", "results", "data/output", ".venv", ".git"]
 
 [tool.pyright]
 include = ["."]

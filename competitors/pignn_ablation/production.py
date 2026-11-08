@@ -10,8 +10,8 @@ import signal
 import traceback
 from pathlib import Path
 
-from competitors.pignn_ablation.recipes import CELLS
 from competitors.gnode_pignn_training import production as P  # noqa: N812
+from competitors.pignn_ablation.recipes import CELLS
 
 READY = P.ROOT / "runs/daniela-pi-ablation-production-v1/READY.json"
 RUNS = P.ROOT / "runs/daniela-pi-ablation-production-v1"

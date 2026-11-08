@@ -16,7 +16,11 @@ import pytest
 
 from competitors.gnode_pignn_gpu.bundle import FILES, build_bundle, extract_bundle, sha
 from competitors.gnode_pignn_gpu.checks import compare_adam_slots, compare_update, relative_l2
-from competitors.gnode_pignn_gpu.colab_support import package_results, run_bounded, write_entrypoints
+from competitors.gnode_pignn_gpu.colab_support import (
+    package_results,
+    run_bounded,
+    write_entrypoints,
+)
 from competitors.gnode_pignn_gpu.runtime import configure
 
 

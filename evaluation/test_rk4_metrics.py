@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from evaluation._io import _json_safe
-from evaluation.rk4_metrics import WINDOWS, build_daniela_report, invariants
 from evaluation.evaluate_rk4 import (
     DEFAULT_SOURCE,
     DT,
@@ -19,6 +18,7 @@ from evaluation.evaluate_rk4 import (
     rk4_reference,
     score_predictions,
 )
+from evaluation.rk4_metrics import WINDOWS, build_daniela_report, invariants
 
 
 def _stationary(n_steps: int = 2000) -> np.ndarray:

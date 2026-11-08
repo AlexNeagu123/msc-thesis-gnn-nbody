@@ -28,9 +28,9 @@ def main() -> None:
     import numpy as np
     import tensorflow as tf
 
-    from competitors.pignn_ablation.recipes import CELLS, scientific_delta
     from competitors.gnode_pignn_training.data import load_train_pairs
     from competitors.gnode_pignn_training.engine import StepEngine
+    from competitors.pignn_ablation.recipes import CELLS, scientific_delta
 
     sources = {
         str(p.relative_to(P.ROOT)): P.sha(p)

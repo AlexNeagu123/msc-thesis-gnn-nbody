@@ -30,12 +30,12 @@ def main() -> None:
         import numpy as np
         import tensorflow as tf
 
-        from competitors.gnode_pignn_tf.models import compiled_rollout
         from competitors.gnode_pignn_gpu.checks import (
             compare_adam_slots,
             compare_update,
             relative_l2,
         )
+        from competitors.gnode_pignn_tf.models import compiled_rollout
         from competitors.gnode_pignn_training.checkpoint import restore_checkpoint, save_checkpoint
         from competitors.gnode_pignn_training.data import PairSampler, load_train_pairs
         from competitors.gnode_pignn_training.engine import StepEngine
