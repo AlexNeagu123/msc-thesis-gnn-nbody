@@ -47,7 +47,23 @@ To be completely clear about what was adapted and what was kept in its original 
 - **Training & validation scripts:** [`training/run_cpu_rk4.py`](training/run_cpu_rk4.py), [`training/cpu_microbatch.py`](training/cpu_microbatch.py), [`training/fixed_validation.py`](training/fixed_validation.py)
 - **Exact kinetic energy ($T = \sum p_i^2 / 2m_i$) & gravity loss controls:** [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py)
 
-| Sheet Row | Experiment | Seed | VAL80 MAE | 100-System MAE | Config / Module |
+### HGNN loss implementation
+
+The YAML files specify the model size, data paths, optimizer settings, trajectory loss (`training.loss: mse`), elapsed-time scaling (`training.dynamic_loss_scaling: elapsed_time_v1`), and curriculum. Each gravity experiment uses a custom Python runner and `GravityLossHGNNTrainer` in its experiment directory under `runs/`. The trainer adds an initial-state acceleration loss to the trajectory loss, with weight `0.1` defined in Python.
+
+| Sheet row | Gravity objective | Historical implementation |
+|---:|---|---|
+| 11 | `Ltraj + 0.1 * MSE(ahat0, agrav0)`; additive softening `s=0.05` | `runs/daniela-hgnn-gravity-soft005-v1/adapter.py` |
+| 12 | `Ltraj + 0.1 * MSE(ahat0, agrav0)`; additive softening `s=0.05**2` | `runs/daniela-hgnn-gravity-genforce-v1/adapter.py` |
+| 13 | `Ltraj + 0.1 * MSE(ahat0, agrav0) / 882.8257392887597`; additive softening `s=0.05**2` | `runs/daniela-hgnn-gravity-norm-v1/adapter.py` |
+
+Here, `ahat0 = -(dV/dq)/m` is the acceleration from the learned potential at the starting state. `agrav0` is analytical gravity, using `(distance_squared + s)**1.5` in the denominator. The scaled variant reads its TRAIN acceleration mean square from `acceleration_scale.json` in the experiment directory.
+
+The reusable implementation in [`competitors/ablation_controls/hgnn.py`](competitors/ablation_controls/hgnn.py) exposes `objective(..., gravity="off")` and `objective(..., gravity="scaled")`. `KineticAblationHGNN(kinetic="exact")` supplies the exact kinetic energy used in rows 14–17; the training loop calls the objective with the chosen gravity setting.
+
+**File locations:** The table below links to YAML settings and reusable modules. Historical runners and their supporting files are stored locally under the Git-ignored `runs/` directory. Those historical files retain their original module/config paths; the handover code uses the renamed paths shown here.
+
+| Sheet Row | Experiment | Seed | VAL80 MAE | 100-System MAE | Settings / Module |
 |---:|---|---:|---:|---:|---|
 | 6 | **HGNN (Staged)** | 42 | `0.0563` | `0.0578` | [`configs/hgnn-cpu-long-horizons.yaml`](configs/hgnn-cpu-long-horizons.yaml) |
 | 7 | `HGNN: 1-Step Only` | 42 | `0.1976` | `0.1986` | [`configs/hgnn-one-step-control-v1.yaml`](configs/hgnn-one-step-control-v1.yaml) |
