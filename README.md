@@ -180,6 +180,19 @@ interpretability/symbolic.py
 interpretability/interpretability.ipynb
 ```
 
+## Reciprocal Three-Body Benchmark (HGNN, GNODE & PI-GNN)
+
+See [**`HANDOVER.md`**](HANDOVER.md) for links to the Google Sheet Comparison Table, the Companion Google Doc, and the code map for all 22 HGNN, GNODE, and PI-GNN experiments.
+
+| Component | Location | Description |
+|---|---|---|
+| Dataset import | `data/import_daniela.py`, `data/lazy_dataset.py` | Converts Daniela's 500 RK4 trajectories into `.h5` train/val/test splits (`320 / 80 / 100`) and rollout windows. |
+| Canonical HGNN | `models/hgnn_canonical.py`, `configs/hgnn-*.yaml` | Mass-compatible Hamiltonian Graph Neural Network with velocity-Verlet (KDK) integration. |
+| Rollout training | `training/run_cpu_rk4.py`, `training/cpu_microbatch.py`, `training/fixed_validation.py`, `training/resume.py` | Microbatch rollout training, 1,999-step validation scoring, and checkpoint resume. |
+| Rollout evaluation | `evaluation/evaluate_rk4.py`, `evaluation/rk4_metrics.py` | Shared rollout position MAE and energy drift metrics across short, medium, and long time windows. |
+| GNODE & PI-GNN | `competitors/gnode_pignn_tf/`, `competitors/gnode_pignn_training/`, `competitors/gnode_pignn_evaluation/`, `competitors/gnode_pignn_gpu/` | TensorFlow/Keras models, training loops, and evaluation helpers for GNODE and PI-GNN. |
+| Ablation controls | `competitors/pignn_ablation/`, `competitors/ablation_controls/` | Ablations for exact kinetic energy $T(p)$, gravity-loss scaling, curriculum order, semi-implicit stepping, and pairwise central forces. |
+
 ## Development Checks
 
 The GitHub workflow runs the same checks locally available here:

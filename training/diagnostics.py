@@ -132,6 +132,9 @@ class TrainingDiagnostics:
         if self.dataset is None:
             return "unknown (no dataset reference)"
 
+        if hasattr(self.dataset, "locate_target"):
+            return self.dataset.locate_target(target)
+
         dataset_targets = self.dataset.targets
         target_cpu = target.cpu()
         if dataset_targets.ndim == 4:

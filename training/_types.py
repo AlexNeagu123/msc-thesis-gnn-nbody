@@ -55,9 +55,28 @@ class TrainingParams:
     curriculum_lrs: list[float] | None = None
     skip_nonfinite_batches: bool = True
     reset_optimizer_on_stage: bool = False
+    # None preserves legacy full-pass training; a cap samples uniform starts with replacement.
+    max_train_batches_per_epoch: int | None = None
+    validation_rollout_steps: int | None = None
+    validation_batch_size: int = 64
+    dynamic_loss_scaling: str = "none"
 
     def __post_init__(self) -> None:
         """Validate single-horizon vs curriculum field combinations."""
+        if self.dynamic_loss_scaling not in ("none", "elapsed_time_v1"):
+            raise ValueError("unknown dynamic_loss_scaling")
+        if self.dynamic_loss_scaling != "none" and self.loss != "mse":
+            raise ValueError("elapsed-time scaling requires mse")
+        for name in (
+            "max_train_batches_per_epoch",
+            "validation_rollout_steps",
+            "validation_batch_size",
+        ):
+            value = getattr(self, name)
+            if value is None and name != "validation_batch_size":
+                continue
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         if self.gradient_clip_norm <= 0:
             msg = f"gradient_clip_norm must be > 0, got {self.gradient_clip_norm}"
             raise ValueError(msg)
@@ -186,8 +205,9 @@ class TrainConfig:
 class Checkpoint:
     """State saved to disk at each epoch.
 
-    `val_loss` is always the one-step validation MSE; `selected_metric`/`selected_score`
-    record which metric drove `is_best`.
+    Legacy `val_loss` follows the current curriculum horizon (not always one step).
+    With fixed_position_mae it is fixed-rollout dynamic-state MSE; the separately
+    named `selected_metric`/`selected_score` identify primary position-MAE selection.
     """
 
     epoch: int
@@ -203,6 +223,7 @@ class Checkpoint:
     selected_metric: str | None = None
     selected_score: float | None = None
     rollout_score: float | None = None
+    resume_state: dict | None = None
 
 
 @dataclass

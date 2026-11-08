@@ -1,5 +1,7 @@
 """Serialization for training artifacts: configs, checkpoints, metrics CSV."""
 
+import os
+import tempfile
 from pathlib import Path
 
 import torch
@@ -16,8 +18,20 @@ def load_config(path: str | Path) -> TrainConfig:
 
 
 def save_checkpoint(path: Path, checkpoint: Checkpoint) -> None:
-    """Persist a Checkpoint to disk via torch.save."""
-    torch.save(checkpoint, path)
+    """Publish a complete checkpoint atomically, leaving an existing file safe on failure."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            torch.save(checkpoint, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
@@ -45,6 +59,10 @@ def load_checkpoint(path: Path, device: torch.device) -> Checkpoint:
             pos_std=raw.get("pos_std"),
             vel_std=raw.get("vel_std"),
             git_commit=raw.get("git_commit"),
+            selected_metric=raw.get("selected_metric"),
+            selected_score=raw.get("selected_score"),
+            rollout_score=raw.get("rollout_score"),
+            resume_state=raw.get("resume_state"),
         )
     msg = f"Unsupported checkpoint type: {type(raw).__name__}"
     raise TypeError(msg)

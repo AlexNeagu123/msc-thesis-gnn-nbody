@@ -1,0 +1,47 @@
+# Development-only bounded pilot, NOT the frozen publication training recipe.
+# Run the tiny fixed-subset overfit check first. No real-data training launched yet.
+model:
+  name: hgnn_canonical_v1
+  hidden_dim: 64
+  n_layers: 4
+  summary: false
+
+data:
+  train_path: data/output/daniela-rk4/train.h5
+  val_path: data/output/daniela-rk4/val.h5
+  dt: 0.001
+
+training:
+  batch_size: 64
+  lr: 2.5e-4
+  weight_decay: 1.0e-5
+  loss: mse
+  noise_factor: 0.0
+  seed: 42
+  device: cpu
+  multi_step_gamma: 1.0
+  checkpoint_metric: fixed_position_mae
+  # Fixed ALL-80 validation starts, independent of training curriculum.
+  # CSV has 1999 future states, not 2000; the last Daniela window is incomplete.
+  validation_rollout_steps: 1999
+  validation_batch_size: 64
+  curriculum_horizons: [1, 5, 20]
+  curriculum_epochs: [1, 1, 1]
+  # Each "epoch" is a bounded sampling round here, NOT a full data pass.
+  # Uniform window-start sampling with replacement across all 320 simulations.
+  # Cap counts attempted batches; actual successful optimizer steps are logged.
+  max_train_batches_per_epoch: 100
+  gradient_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  reset_optimizer_on_stage: false
+
+scheduler:
+  enabled: false
+
+checkpointing:
+  enabled: true
+  dir: runs/daniela-canonical-pilot/
+
+logging:
+  enabled: true
+  dir: runs/daniela-canonical-pilot/

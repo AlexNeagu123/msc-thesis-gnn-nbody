@@ -8,6 +8,9 @@ References:
 """
 
 import argparse
+import copy
+import json
+import math
 import random
 import subprocess
 from dataclasses import asdict, replace
@@ -17,13 +20,17 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torchinfo import summary
 from tqdm import tqdm
 
 from data.dataset import NBodyDataset, TrajectoryWindowDataset
+from data.lazy_dataset import LazyTrajectoryWindowDataset
+from evaluation._io import _json_safe
 from models.egnn import EGNN
 from models.hgnn import HGNN
+from models.hgnn_canonical import MODEL_ID as CANONICAL_MODEL_ID
+from models.hgnn_canonical import CanonicalHGNN
 from training._io import (
     append_metrics,
     init_metrics_csv,
@@ -41,6 +48,8 @@ from training._types import (
     TrainResult,
 )
 from training.diagnostics import TrainingDiagnostics
+from training.fixed_validation import METRIC as FIXED_POSITION_MAE
+from training.fixed_validation import FixedRolloutEvaluator, file_sha256
 from training.rollout_score import BucketRolloutScoreEvaluator, RolloutScoreEvaluator
 from utils import get_logger
 
@@ -67,6 +76,7 @@ def build_model(
     cfg: TrainConfig,
     pos_std: float = 1.0,
     vel_std: float = 1.0,
+    momentum_std: float | None = None,
 ) -> nn.Module:
     """Instantiate a model based on config."""
     name = cfg.model.name
@@ -87,6 +97,17 @@ def build_model(
             vel_std=vel_std,
         )
 
+    if name == CANONICAL_MODEL_ID:
+        if momentum_std is None:
+            raise ValueError("canonical HGNN requires an explicit training-fitted momentum_std")
+        return CanonicalHGNN(
+            hidden_dim=cfg.model.hidden_dim,
+            n_layers=cfg.model.n_layers,
+            dt=cfg.data.dt,
+            pos_std=pos_std,
+            momentum_std=momentum_std,
+        )
+
     msg = f"Unknown model: {name}"
     raise ValueError(msg)
 
@@ -99,13 +120,20 @@ class Trainer:
         cfg: TrainConfig,
         model: nn.Module | None = None,
         init_checkpoint: str | Path | None = None,
+        resume_checkpoint: str | Path | None = None,
+        allow_runtime_change: bool = False,
     ) -> None:
         """Set up all training components from config.
 
         `model` is a DI hook for tests. `init_checkpoint` seeds model weights only;
         optimizer, scheduler, run_id, logs, and checkpoint dir all start fresh.
         """
-        valid_metrics = ("val_loss", "rollout_score", "bucket_macro_rollout_score")
+        valid_metrics = (
+            "val_loss",
+            "rollout_score",
+            "bucket_macro_rollout_score",
+            FIXED_POSITION_MAE,
+        )
         if cfg.training.checkpoint_metric not in valid_metrics:
             msg = (
                 f"checkpoint_metric must be one of {valid_metrics}, "
@@ -113,8 +141,44 @@ class Trainer:
             )
             raise ValueError(msg)
 
+        if (
+            cfg.model.name == CANONICAL_MODEL_ID
+            and init_checkpoint is not None
+            and resume_checkpoint is None
+        ):
+            raise ValueError(
+                "canonical HGNN benchmark starts from scratch; init_checkpoint is unsupported"
+            )
+        if cfg.training.dynamic_loss_scaling != "none" and cfg.model.name != CANONICAL_MODEL_ID:
+            raise ValueError("elapsed-time loss scaling requires canonical HGNN")
+        from training import resume
+
+        if resume_checkpoint is not None and (init_checkpoint is not None or model is not None):
+            raise ValueError("resume cannot be combined with init_checkpoint or model injection")
+        self._resume_checkpoint = (
+            load_checkpoint(Path(resume_checkpoint), torch.device("cpu"))
+            if resume_checkpoint is not None
+            else None
+        )
+        if self._resume_checkpoint is not None:
+            resume.validate(self._resume_checkpoint, cfg)
+        self._progress: dict = {}
+        self._best_checkpoint: Checkpoint | None = None
+        self._resume_lineage: list = []
         self.cfg = cfg
-        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_format = "%Y%m%d_%H%M%S_%f" if cfg.model.name == CANONICAL_MODEL_ID else "%Y%m%d_%H%M%S"
+        self.run_id = datetime.now().strftime(run_format)
+        if self._resume_checkpoint is not None:
+            self.run_id = self._resume_checkpoint.run_id
+        self.artifact_id = (
+            self.run_id
+            if self._resume_checkpoint is None
+            else f"{self.run_id}-resume-{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        )
+        self.optimizer_steps = 0
+        self.attempted_train_batches = 0
+        self.validation_history: list[dict] = []
+        self._train_generator = torch.Generator().manual_seed(cfg.training.seed)
 
         self._seed_everything(cfg.training.seed)
         self.device = self._resolve_device(cfg.training.device)
@@ -125,7 +189,32 @@ class Trainer:
             cfg.training.seed,
         )
 
+        self.data_hashes = {}
+        self.source_hashes = {}
+        if cfg.model.name == CANONICAL_MODEL_ID:
+            self.data_hashes = {
+                name: file_sha256(Path(path))
+                for name, path in (("train", cfg.data.train_path), ("val", cfg.data.val_path))
+            }
+            root = Path(__file__).resolve().parents[1]
+            sources = (
+                "models/hgnn.py",
+                "models/hgnn_canonical.py",
+                "models/baselines.py",
+                "data/lazy_dataset.py",
+                "training/train.py",
+                "training/_io.py",
+                "training/resume.py",
+                "training/_types.py",
+                "training/fixed_validation.py",
+                "training/rollout_score.py",
+                "evaluation/rk4_metrics.py",
+            )
+            self.source_hashes = {name: file_sha256(root / name) for name in sources}
         self.train_loader, self.val_loader = self._setup_data()
+        for name, path in (("train", cfg.data.train_path), ("val", cfg.data.val_path)):
+            if name in self.data_hashes and file_sha256(Path(path)) != self.data_hashes[name]:
+                raise RuntimeError(f"{name} source changed during training setup")
         self.model = model.to(self.device) if model is not None else self._setup_model()
         self.current_clip_norm = cfg.training.gradient_clip_norm
 
@@ -139,8 +228,22 @@ class Trainer:
         # built before logging so the CSV header can widen with bin_order in bucket mode
         self.rollout_evaluator: RolloutScoreEvaluator | None = None
         self.bucket_evaluator: BucketRolloutScoreEvaluator | None = None
+        self.fixed_evaluator: FixedRolloutEvaluator | None = None
         self.bucket_bin_order: tuple[str, ...] = ()
-        if cfg.training.checkpoint_metric == "rollout_score":
+        if cfg.training.checkpoint_metric == FIXED_POSITION_MAE:
+            self.fixed_evaluator = FixedRolloutEvaluator(
+                val_path=cfg.data.val_path,
+                train_path=cfg.data.train_path,
+                dt=cfg.data.dt,
+                device=self.device,
+                steps=cfg.training.validation_rollout_steps,
+                batch_size=cfg.training.validation_batch_size,
+                n_train_trajectories=cfg.data.n_train_trajectories,
+                expected_train_sha256=self.data_hashes.get("train"),
+                expected_val_sha256=self.data_hashes.get("val"),
+            )
+            logger.info("checkpoint metric: fixed position MAE (independent of training horizon)")
+        elif cfg.training.checkpoint_metric == "rollout_score":
             self.rollout_evaluator = RolloutScoreEvaluator(
                 val_path=cfg.data.val_path,
                 train_path=cfg.data.train_path,
@@ -173,23 +276,37 @@ class Trainer:
             dataset=self.train_loader.dataset,
         )
 
-    def run(self) -> TrainResult:
+        if self._resume_checkpoint is not None:
+            resume.restore(self, self._resume_checkpoint, allow_runtime_change=allow_runtime_change)
+
+    def run(self, *, max_rounds: int | None = None) -> TrainResult:
         """Execute the full training loop, stage by stage when curriculum is set."""
+        if max_rounds is not None and (
+            not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or max_rounds < 1
+        ):
+            raise ValueError("max_rounds must be positive")
         cfg = self.cfg
         verbose = cfg.logging.enabled
-        best_val_loss = float("inf")
-        best_selected_score = float("inf")
-        best_epoch = 0
-        train_history: list[float] = []
-        val_history: list[float] = []
+        best_val_loss = self._progress.get("best_val_loss", float("inf"))
+        best_selected_score = self._progress.get("best_selected_score", float("inf"))
+        best_epoch = self._progress.get("best_epoch", 0)
+        train_history: list[float] = list(self._progress.get("train_history", []))
+        val_history: list[float] = list(self._progress.get("val_history", []))
         last_rollout: RolloutScore | None = None
-        epoch_index = 0
+        epoch_index = len(train_history)
+        completed = epoch_index
+        rounds_this_call = 0
+        stage_start = 0
 
         last_bucket: BucketRolloutScore | None = None
 
         stages = self._stages()
         total_epochs = sum(n for _, n in stages)
         for stage_idx, (horizon, n_stage_epochs) in enumerate(stages):
+            first_round = max(0, completed - stage_start)
+            stage_start += n_stage_epochs
+            if first_round >= n_stage_epochs:
+                continue
             target_stage_lr = self._stage_lr(stage_idx)
             if horizon != self.current_horizon:
                 self.train_loader, self.val_loader = self._setup_loaders_for_horizon(horizon)
@@ -201,7 +318,7 @@ class Trainer:
                     logger.info("optimizer reset at stage transition | horizon=%d", horizon)
 
             # apply per-stage LR before the stage-start log line; idempotent after a reset
-            if cfg.training.curriculum_lrs is not None:
+            if cfg.training.curriculum_lrs is not None and first_round == 0:
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = target_stage_lr
 
@@ -216,18 +333,23 @@ class Trainer:
                 len(stages),
                 horizon,
                 epoch_index + 1,
-                epoch_index + n_stage_epochs,
+                epoch_index + n_stage_epochs - first_round,
                 stage_lr,
                 self.current_clip_norm,
                 score_before,
             )
 
-            for _ in range(n_stage_epochs):
+            for _ in range(first_round, n_stage_epochs):
                 epoch_index += 1
                 train_summary = self._run_epoch(training=True, verbose=verbose)
-                val_summary = self._run_epoch(training=False, verbose=verbose)
+                fixed_report = None
                 train_loss = train_summary.loss
-                val_loss = val_summary.loss
+                if self.fixed_evaluator is not None:
+                    fixed_report = self.fixed_evaluator.score(self.model)
+                    val_loss = fixed_report["model"]["state4_mse"]
+                else:
+                    val_summary = self._run_epoch(training=False, verbose=verbose)
+                    val_loss = val_summary.loss
 
                 train_history.append(train_loss)
                 val_history.append(val_loss)
@@ -240,7 +362,10 @@ class Trainer:
                     bucket = self.bucket_evaluator.score(self.model)
 
                 selected_metric = cfg.training.checkpoint_metric
-                if rollout is not None:
+                if fixed_report is not None:
+                    selected_score = fixed_report["model"]["selection_score"]
+                    self._record_fixed_validation(epoch_index, fixed_report)
+                elif rollout is not None:
                     selected_score = rollout.score
                 elif bucket is not None:
                     selected_score = bucket.macro
@@ -262,6 +387,14 @@ class Trainer:
                     best_selected_score = selected_score
                     best_epoch = epoch_index
 
+                if self.cfg.model.name == CANONICAL_MODEL_ID:
+                    self._progress = {
+                        "best_val_loss": best_val_loss,
+                        "best_selected_score": best_selected_score,
+                        "best_epoch": best_epoch,
+                        "train_history": train_history,
+                        "val_history": val_history,
+                    }
                 self._checkpoint(
                     epoch_index,
                     val_loss=val_loss,
@@ -282,6 +415,11 @@ class Trainer:
                 )
                 last_rollout = rollout
                 last_bucket = bucket
+                rounds_this_call += 1
+                if max_rounds is not None and rounds_this_call >= max_rounds:
+                    return TrainResult(
+                        best_val_loss, train_history[-1], best_epoch, train_history, val_history
+                    )
 
             score_after = _format_rollout_or_bucket(last_rollout, last_bucket)
             logger.info(
@@ -321,12 +459,33 @@ class Trainer:
         cfg = self.cfg
         initial_horizon = self._initial_stage_horizon()
         train_set = self._build_dataset(
-            cfg.data.train_path, initial_horizon, cfg.data.n_train_trajectories
+            cfg.data.train_path,
+            initial_horizon,
+            cfg.data.n_train_trajectories,
+            lazy=cfg.model.name == CANONICAL_MODEL_ID,
         )
-        val_set = self._build_dataset(cfg.data.val_path, initial_horizon)
+        val_set = self._build_dataset(
+            cfg.data.val_path,
+            initial_horizon,
+            lazy=cfg.model.name == CANONICAL_MODEL_ID,
+        )
 
-        self.pos_std = float(train_set.inputs[..., :2].std())
-        self.vel_std = float(train_set.inputs[..., 2:4].std())
+        if self._resume_checkpoint is not None:
+            saved = self._resume_checkpoint.resume_state
+            self.pos_std, self.vel_std = saved["pos_std"], saved["vel_std"]
+            self.momentum_std = saved["momentum_std"]
+            if not all(
+                math.isfinite(value) and value > 0
+                for value in (self.pos_std, self.vel_std, self.momentum_std)
+            ):
+                raise ValueError("resume normalization scales must be finite and positive")
+        else:
+            self.pos_std = float(train_set.inputs[..., :2].std())
+            self.vel_std = float(train_set.inputs[..., 2:4].std())
+            if cfg.model.name == CANONICAL_MODEL_ID:
+                momentum = train_set.inputs[..., 2:4] * train_set.inputs[..., 4:]
+                self.momentum_std = float(momentum.std())
+                logger.info("canonical momentum std (training only): %.6f", self.momentum_std)
         self.current_horizon = initial_horizon
         logger.info("data stds: pos=%.4f, vel=%.4f", self.pos_std, self.vel_std)
 
@@ -343,8 +502,14 @@ class Trainer:
     def _setup_loaders_for_horizon(self, horizon: int) -> tuple[DataLoader, DataLoader]:
         """Build fresh train/val loaders at the given horizon (no stat recomputation)."""
         cfg = self.cfg
-        train_set = self._build_dataset(cfg.data.train_path, horizon, cfg.data.n_train_trajectories)
-        val_set = self._build_dataset(cfg.data.val_path, horizon)
+        if cfg.model.name == CANONICAL_MODEL_ID:
+            train_set = self.train_loader.dataset.with_horizon(horizon)
+            val_set = self.val_loader.dataset.with_horizon(horizon)
+        else:
+            train_set = self._build_dataset(
+                cfg.data.train_path, horizon, cfg.data.n_train_trajectories
+            )
+            val_set = self._build_dataset(cfg.data.val_path, horizon)
         train_loader, val_loader = self._loaders_from_sets(train_set, val_set)
         logger.info(
             "loaders rebuilt: %d train / %d val samples, horizon=%d, batch_size=%d",
@@ -360,12 +525,28 @@ class Trainer:
     ) -> tuple[DataLoader, DataLoader]:
         """Wrap train/val datasets into DataLoaders with the trainer's settings."""
         use_cuda = self.device.type == "cuda"
-        train_loader = DataLoader(
-            train_set,
-            batch_size=self.cfg.training.batch_size,
-            shuffle=True,
-            pin_memory=use_cuda,
-        )
+        cap = self.cfg.training.max_train_batches_per_epoch
+        if cap is None:
+            train_loader = DataLoader(
+                train_set,
+                batch_size=self.cfg.training.batch_size,
+                shuffle=True,
+                pin_memory=use_cuda,
+            )
+        else:
+            # Bounded attempts, not a prefix of simulations/windows or an unbounded retry loop.
+            sampler = RandomSampler(
+                train_set,
+                replacement=True,
+                num_samples=cap * self.cfg.training.batch_size,
+                generator=self._train_generator,
+            )
+            train_loader = DataLoader(
+                train_set,
+                batch_size=self.cfg.training.batch_size,
+                sampler=sampler,
+                pin_memory=use_cuda,
+            )
         val_loader = DataLoader(
             val_set,
             batch_size=self.cfg.training.batch_size,
@@ -410,7 +591,17 @@ class Trainer:
 
     def _setup_model(self) -> nn.Module:
         """Build the model and optionally print a summary."""
-        model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(self.device)
+        if self.cfg.model.name == CANONICAL_MODEL_ID:
+            model = build_model(
+                self.cfg,
+                pos_std=self.pos_std,
+                vel_std=self.vel_std,
+                momentum_std=self.momentum_std,
+            ).to(self.device)
+        else:
+            model = build_model(self.cfg, pos_std=self.pos_std, vel_std=self.vel_std).to(
+                self.device
+            )
 
         if self.cfg.model.summary:
             n_particles = 3
@@ -477,8 +668,8 @@ class Trainer:
         if not self.cfg.checkpointing.enabled:
             return None
 
-        ckpt_dir = Path(self.cfg.checkpointing.dir) / self.run_id
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = Path(self.cfg.checkpointing.dir) / self.artifact_id
+        ckpt_dir.mkdir(parents=True, exist_ok=self.cfg.model.name != CANONICAL_MODEL_ID)
         return ckpt_dir
 
     def _setup_logging(self) -> Path | None:
@@ -486,7 +677,8 @@ class Trainer:
         if not self.cfg.logging.enabled:
             return None
 
-        log_dir = Path(self.cfg.logging.dir) / self.run_id
+        log_dir = Path(self.cfg.logging.dir) / self.artifact_id
+        # Checkpoints and logs may intentionally share this run directory.
         log_dir.mkdir(parents=True, exist_ok=True)
         csv_path = log_dir / "metrics.csv"
         init_metrics_csv(csv_path, bin_names=self.bucket_bin_order)
@@ -518,6 +710,7 @@ class Trainer:
             loader = self.val_loader
 
         total_loss = 0.0
+        total_weight = 0
         n_taken = 0
         grad_norms: list[float] = []
         n_clipped = 0
@@ -529,6 +722,8 @@ class Trainer:
         ctx = torch.enable_grad() if training else torch.no_grad()
         with ctx:
             for batch_idx, (inputs, targets) in enumerate(batches, start=1):
+                if training:
+                    self.attempted_train_batches += 1
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
 
@@ -565,9 +760,12 @@ class Trainer:
                     if grad_norm_value > self.current_clip_norm:
                         n_clipped += 1
                     self.optimizer.step()
+                    self.optimizer_steps += 1
 
                 batch_loss = loss.item()
-                total_loss += batch_loss
+                weight = len(inputs) if self.cfg.model.name == CANONICAL_MODEL_ID else 1
+                total_loss += batch_loss * weight
+                total_weight += weight
                 n_taken += 1
 
                 if training:
@@ -581,9 +779,9 @@ class Trainer:
                     )
 
                 if verbose:
-                    batches.set_postfix(loss=f"{total_loss / n_taken:.6f}")
+                    batches.set_postfix(loss=f"{total_loss / total_weight:.6f}")
 
-        avg_loss = total_loss / n_taken if n_taken > 0 else float("nan")
+        avg_loss = total_loss / total_weight if n_taken > 0 else float("nan")
 
         if not training:
             return EpochRunSummary(loss=avg_loss)
@@ -623,8 +821,28 @@ class Trainer:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """One forward pass; full-state MSE against the next-step target."""
         preds = self.model(inputs)
-        loss = self.loss_fn(preds, targets)
+        if self.cfg.model.name == CANONICAL_MODEL_ID:
+            loss = self._dynamic_step_loss(preds, targets, step=1)
+        else:
+            loss = self.loss_fn(preds, targets)
         return preds, loss
+
+    def _dynamic_step_loss(
+        self, predicted: torch.Tensor, target: torch.Tensor, *, step: int
+    ) -> torch.Tensor:
+        """Optional velocity-unit residual scaling; original unweighted loss is unchanged."""
+        if self.cfg.training.dynamic_loss_scaling == "none":
+            return self.loss_fn(predicted[..., :4], target[..., :4])
+        if not math.isfinite(self.vel_std) or self.vel_std <= 0:
+            raise ValueError("elapsed-time loss requires a positive training velocity scale")
+        elapsed = step * self.cfg.data.dt
+        if not math.isfinite(elapsed) or elapsed <= 0:
+            raise ValueError("elapsed-time loss requires positive elapsed time")
+        error = predicted[..., :4] - target[..., :4]
+        return 0.5 * (
+            (error[..., :2] / (elapsed * self.vel_std)).square().mean()
+            + (error[..., 2:4] / self.vel_std).square().mean()
+        )
 
     def _multi_step_rollout_loss(
         self,
@@ -641,12 +859,12 @@ class Trainer:
 
         state = self.model(inputs)
         first_preds = state
-        weighted_loss = self.loss_fn(state[..., :4], targets[:, 0, ..., :4])
+        weighted_loss = self._dynamic_step_loss(state, targets[:, 0], step=1)
         weight_sum = 1.0
 
         for k in range(1, horizon):
             state = self.model(state)
-            step_loss = self.loss_fn(state[..., :4], targets[:, k, ..., :4])
+            step_loss = self._dynamic_step_loss(state, targets[:, k], step=k + 1)
             weight = gamma**k
             weighted_loss = weighted_loss + weight * step_loss
             weight_sum += weight
@@ -690,9 +908,19 @@ class Trainer:
             selected_score=selected_score,
             rollout_score=ckpt_rollout_score,
         )
-        save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
-        if is_best:
-            save_checkpoint(self.ckpt_dir / "best.pt", ckpt)
+        if self.cfg.model.name == CANONICAL_MODEL_ID and self._progress:
+            from training.resume import capture
+
+            if is_best:
+                self._best_checkpoint = copy.deepcopy(ckpt)
+            ckpt.resume_state = capture(self)
+            save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
+            if self._best_checkpoint is not None:
+                save_checkpoint(self.ckpt_dir / "best.pt", self._best_checkpoint)
+        else:
+            save_checkpoint(self.ckpt_dir / "latest.pt", ckpt)
+            if is_best:
+                save_checkpoint(self.ckpt_dir / "best.pt", ckpt)
 
     def _log_epoch(
         self,
@@ -768,14 +996,43 @@ class Trainer:
                 lr,
             )
 
+    def _record_fixed_validation(self, epoch: int, report: dict) -> None:
+        """Log explicitly named primary metrics and update counts, separate from legacy CSV."""
+        record = {
+            "epoch": epoch,
+            "training_horizon": self.current_horizon,
+            "optimizer_steps": self.optimizer_steps,
+            "attempted_train_batches": self.attempted_train_batches,
+            "selection_metric": FIXED_POSITION_MAE,
+            "config": asdict(self.cfg),
+            "source_sha256": self.source_hashes,
+            **report,
+        }
+        self.validation_history.append(record)
+        artifact_dir = self.csv_path.parent if self.csv_path is not None else self.ckpt_dir
+        if artifact_dir is not None:
+            with (artifact_dir / "fixed_validation.jsonl").open("a") as handle:
+                handle.write(json.dumps(_json_safe(record), allow_nan=False) + "\n")
+        logger.info(
+            "fixed val position MAE=%s | failed runs=%d | optimizer steps=%d | attempts=%d",
+            report["model"]["selection_score"],
+            report["model"]["failed_runs"],
+            self.optimizer_steps,
+            self.attempted_train_batches,
+        )
+
     # static helpers
     @staticmethod
     def _build_dataset(
         path: str,
         horizon: int,
         n_trajectories: int | None = None,
+        *,
+        lazy: bool = False,
     ) -> Dataset:
-        """Pick the right dataset for the configured rollout horizon."""
+        """Keep legacy materialization unless the canonical path explicitly opts in."""
+        if lazy:
+            return LazyTrajectoryWindowDataset(path, horizon, n_trajectories)
         if horizon == 1:
             return NBodyDataset(path, n_trajectories)
         return TrajectoryWindowDataset(path, horizon=horizon, n_trajectories=n_trajectories)
@@ -831,9 +1088,19 @@ def train(
     cfg: TrainConfig,
     model: nn.Module | None = None,
     init_checkpoint: str | Path | None = None,
+    *,
+    resume_checkpoint: str | Path | None = None,
+    allow_runtime_change: bool = False,
+    max_rounds: int | None = None,
 ) -> TrainResult:
-    """Run Trainer with a compact function call."""
-    return Trainer(cfg, model=model, init_checkpoint=init_checkpoint).run()
+    """Run training, optionally continuing a committed canonical round."""
+    return Trainer(
+        cfg,
+        model=model,
+        init_checkpoint=init_checkpoint,
+        resume_checkpoint=resume_checkpoint,
+        allow_runtime_change=allow_runtime_change,
+    ).run(max_rounds=max_rounds)
 
 
 def apply_artifact_dir(cfg: TrainConfig, artifact_dir: str | Path) -> TrainConfig:
@@ -880,6 +1147,19 @@ if __name__ == "__main__":
             "YAML. The trainer still appends <run_id> as a per-run subdirectory."
         ),
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        help="Continue canonical latest.pt at its committed round boundary, not a warm start",
+    )
+    parser.add_argument(
+        "--allow-runtime-change",
+        action="store_true",
+        help="Explicitly allow non-bitwise continuation on changed runtime/hardware",
+    )
+    parser.add_argument(
+        "--max-rounds", type=int, help="Stop cleanly after this many additional committed rounds"
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -887,5 +1167,11 @@ if __name__ == "__main__":
         config = replace(config, data=replace(config.data, n_train_trajectories=args.n_train))
     if args.artifact_dir is not None:
         config = apply_artifact_dir(config, args.artifact_dir)
-    results = train(config, init_checkpoint=args.init_checkpoint)
+    results = train(
+        config,
+        init_checkpoint=args.init_checkpoint,
+        resume_checkpoint=args.resume,
+        allow_runtime_change=args.allow_runtime_change,
+        max_rounds=args.max_rounds,
+    )
     logger.info("results: %s", results)

@@ -1,0 +1,28 @@
+# B1: one-step HGNN package control,2500 updates; no public/probe warm start.
+model: {name: hgnn_canonical_v1, hidden_dim: 64, n_layers: 4, summary: false}
+data:
+  train_path: data/output/daniela-rk4/train.h5
+  val_path: data/output/daniela-rk4/val.h5
+  dt: 0.001
+training:
+  batch_size: 64
+  lr: 2.5e-4
+  weight_decay: 1.0e-5
+  loss: mse
+  dynamic_loss_scaling: elapsed_time_v1
+  noise_factor: 0.0
+  seed: 42
+  device: cpu
+  multi_step_gamma: 1.0
+  checkpoint_metric: fixed_position_mae
+  validation_rollout_steps: 1999
+  validation_batch_size: 64
+  curriculum_horizons: [1, 1, 1, 1, 1]
+  curriculum_epochs: [5, 5, 5, 5, 5]
+  max_train_batches_per_epoch: 100
+  gradient_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  reset_optimizer_on_stage: false
+scheduler: {enabled: false}
+checkpointing: {enabled: true, dir: runs/daniela-hgnn-one-step-control-v1/segments}
+logging: {enabled: true, dir: runs/daniela-hgnn-one-step-control-v1/segments}
